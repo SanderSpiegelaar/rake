@@ -1,11 +1,11 @@
-use std::{env, ffi::OsString, fs, path::Path};
+use std::{env, ffi::OsString, fs, path::Path, rc::Rc};
 
 use rake_config::RakeConfig;
 use tao::{
     dpi::LogicalSize,
     event::{Event, WindowEvent},
     event_loop::{ControlFlow, EventLoop},
-    window::WindowBuilder,
+    window::{Theme, WindowBuilder},
 };
 use wry::WebViewBuilder;
 
@@ -20,11 +20,57 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             std::process::exit(1);
         });
     let event_loop = EventLoop::new();
-    let window = WindowBuilder::new()
-        .with_title("Rake")
+    let mut window = WindowBuilder::new()
+        .with_title(config.title.clone().unwrap_or_else(|| config.app_name()))
         .with_inner_size(LogicalSize::new(config.width, config.height))
-        .build(&event_loop)?;
-    let _webview = WebViewBuilder::new().with_url(&config.url).build(&window)?;
+        .with_theme(config.dark_mode.then_some(Theme::Dark));
+    if config.min_width.is_some() || config.min_height.is_some() {
+        window = window.with_min_inner_size(LogicalSize::new(
+            config.min_width.unwrap_or(0),
+            config.min_height.unwrap_or(0),
+        ));
+    }
+    #[cfg(target_os = "macos")]
+    if config.hide_title_bar {
+        use tao::platform::macos::WindowBuilderExtMacOS;
+
+        window = window
+            .with_titlebar_transparent(true)
+            .with_title_hidden(true)
+            .with_fullsize_content_view(true);
+    }
+    let window = Rc::new(window.build(&event_loop)?);
+    let mut webview = WebViewBuilder::new().with_url(&config.url);
+    if let Some(user_agent) = &config.user_agent {
+        webview = webview.with_user_agent(user_agent);
+    }
+    #[cfg(target_os = "macos")]
+    if config.hide_title_bar {
+        let window = Rc::clone(&window);
+        // The webview covers the titlebar, so its top 28 CSS pixels restore native dragging.
+        webview = webview
+            .with_initialization_script(
+                r#"
+                for (const [event, message] of [["mousedown", "rake:drag"], ["dblclick", "rake:zoom"]]) {
+                    document.addEventListener(event, (event) => {
+                        if (event.button === 0 && event.clientY >= 0 && event.clientY < 28 &&
+                            event.target instanceof Element &&
+                            !event.target.closest('a, button, input, select, textarea, label, [role="button"], [contenteditable]')) {
+                            window.ipc.postMessage(message);
+                        }
+                    });
+                }
+                "#,
+            )
+            .with_ipc_handler(move |request| match request.body().as_str() {
+                "rake:drag" => {
+                    let _ = window.drag_window();
+                }
+                "rake:zoom" => window.set_maximized(!window.is_maximized()),
+                _ => {}
+            });
+    }
+    let _webview = webview.build(window.as_ref())?;
 
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Wait;

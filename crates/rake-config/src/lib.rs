@@ -123,17 +123,24 @@ impl RakeConfig {
         Ok(())
     }
 
+    pub fn app_name(&self) -> String {
+        self.name
+            .clone()
+            .or_else(|| {
+                url::Url::parse(&self.url)
+                    .ok()?
+                    .host_str()
+                    .map(String::from)
+            })
+            .unwrap_or_else(|| "Rake".into())
+    }
+
     pub fn identifier(&self) -> String {
         if let Some(identifier) = &self.identifier {
             return identifier.clone();
         }
 
-        let parsed_url = url::Url::parse(&self.url).ok();
-        let name = self
-            .name
-            .as_deref()
-            .or_else(|| parsed_url.as_ref().and_then(url::Url::host_str))
-            .unwrap_or("app");
+        let name = self.app_name();
         let mut slug = String::new();
         for c in name.to_lowercase().chars() {
             if c.is_ascii_lowercase() || c.is_ascii_digit() {
@@ -335,7 +342,22 @@ mod tests {
     }
 
     #[test]
-    fn identifier_uses_name_then_host_then_app() {
+    fn app_name_uses_name_then_host_then_rake() {
+        for (url, name, expected) in [
+            ("https://example.com/path", Some("My App"), "My App"),
+            ("https://example.com/path", None, "example.com"),
+            ("https://example.com", Some(""), ""),
+            ("invalid", None, "Rake"),
+            ("mailto:hello@example.com", None, "Rake"),
+        ] {
+            let mut config = RakeConfig::new(url);
+            config.name = name.map(String::from);
+            assert_eq!(config.app_name(), expected);
+        }
+    }
+
+    #[test]
+    fn identifier_uses_app_name_with_empty_slug_fallback() {
         for (name, expected_slug) in [
             (None, "example-com"),
             (Some(""), "app"),
@@ -354,7 +376,7 @@ mod tests {
         assert!(
             RakeConfig::new("invalid")
                 .identifier()
-                .starts_with("com.rake.app-")
+                .starts_with("com.rake.rake-")
         );
     }
 
