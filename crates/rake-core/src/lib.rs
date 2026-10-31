@@ -217,6 +217,7 @@ pub fn assemble(
         .map_err(|error| Error::InvalidInput(error.to_string()))?;
     fs::write(resources.join("config.json"), json)?;
     let warnings = install_icon(&config.url, icon, &resources, &staging.0)?;
+    sign(&bundle)?;
     let old = staging.0.join("old.app");
     let exists = check_destination()?;
     if exists {
@@ -232,6 +233,13 @@ pub fn assemble(
         path: destination,
         warnings,
     })
+}
+
+pub fn sign(bundle: &Path) -> Result<(), Error> {
+    run(Command::new("/usr/bin/codesign")
+        .args(["--force", "--deep", "--sign", "-"])
+        .arg(bundle))?;
+    Ok(())
 }
 
 fn install_icon(
@@ -564,6 +572,7 @@ fn run(command: &mut Command) -> Result<String, Error> {
         Some("shasum") => "shasum",
         Some("/usr/bin/ditto") => "ditto",
         Some("/usr/bin/plutil") => "plutil",
+        Some("/usr/bin/codesign") => "codesign",
         Some("sips") => "sips",
         Some("iconutil") => "iconutil",
         _ => "tar",
@@ -669,6 +678,71 @@ mod tests {
             fs::read(result.path.join("Contents/Resources").join(ICON_FILE)).unwrap(),
             b"icon"
         );
+    }
+
+    #[test]
+    fn signing_failure_surfaces_codesign_output_and_does_not_publish() {
+        let (temp, template, config) = assembly_fixture();
+        let existing_output = temp.0.join("existing");
+        let existing = assemble(&config, &template, &existing_output, false, None)
+            .unwrap()
+            .path;
+        let original = fs::read(existing.join("Contents/_CodeSignature/CodeResources")).unwrap();
+        let attribute = Command::new("/usr/bin/xattr")
+            .args(["-w", "com.apple.ResourceFork", "unsignable"])
+            .arg(template.join("Contents/MacOS/rake-runtime"))
+            .status()
+            .unwrap();
+        assert!(attribute.success());
+        let output = temp.0.join("out");
+        let error = assemble(&config, &template, &output, false, None).unwrap_err();
+        let Error::Command { program, detail } = &error else {
+            panic!("expected codesign failure, got {error}");
+        };
+        assert_eq!(*program, "codesign");
+        assert!(
+            detail.contains("resource fork, Finder information, or similar detritus not allowed"),
+            "{detail}"
+        );
+        assert!(error.to_string().contains(detail));
+        assert_eq!(error.exit_code(), 4);
+        assert_eq!(fs::read_dir(output).unwrap().count(), 0);
+        let error = assemble(&config, &template, &existing_output, true, None).unwrap_err();
+        assert!(error.to_string().contains("detritus not allowed"));
+        assert_eq!(
+            fs::read(existing.join("Contents/_CodeSignature/CodeResources")).unwrap(),
+            original
+        );
+        assert_eq!(fs::read_dir(existing_output).unwrap().count(), 1);
+    }
+
+    #[test]
+    #[ignore = "requires cargo xtask template and macOS signing tools"]
+    fn real_signed_app() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let template = env::var_os("RAKE_TEMPLATE")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| root.join("target/template/Rake.app"));
+        assert!(complete_bundle(&template), "Run cargo xtask template first");
+        let mut config = RakeConfig::new("https://example.com");
+        config.name = Some("Rake Signing Proof".into());
+        let icon = Icon::Path(template.join("Contents/Resources").join(ICON_FILE));
+        let result = assemble(
+            &config,
+            &template,
+            &root.join("target/rake018-verification"),
+            true,
+            Some(&icon),
+        )
+        .unwrap();
+        let verification = Command::new("/usr/bin/codesign")
+            .args(["--verify", "--deep", "--strict", "--verbose=2"])
+            .arg(&result.path)
+            .output()
+            .unwrap();
+        let detail = String::from_utf8_lossy(&verification.stderr);
+        assert!(verification.status.success(), "{detail}");
+        println!("{detail}App retained at {}", result.path.display());
     }
 
     #[test]
