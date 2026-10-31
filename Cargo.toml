@@ -10,6 +10,11 @@ publish = false
 
 [workspace.dependencies]
 clap = { version = "=4.6.7", features = ["derive"] }
+# crates.io gpui-pre 0.3.10 snapshots zed@08cbb88a152c3751a43e853425a70e9f631a5918.
+# Pin the matching platform adapter to avoid API drift without fetching Zed's git workspace.
+gpui = { package = "gpui-pre", version = "=0.3.10", default-features = false }
+# Runtime Metal shaders allow builds with Command Line Tools instead of full Xcode.
+gpui_platform = { package = "gpui-pre-platform", version = "=0.3.10", default-features = false, features = ["font-kit", "runtime_shaders"] }
 objc2 = "=0.6.5"
 objc2-app-kit = { version = "=0.3.2", default-features = false, features = ["std", "NSAlert", "NSApplication"] }
 objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "NSString"] }
