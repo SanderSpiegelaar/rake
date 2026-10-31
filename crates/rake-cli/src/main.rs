@@ -1,7 +1,9 @@
 use std::{
     fs,
+    io::{self, Write},
     path::{Path, PathBuf},
     process,
+    time::Instant,
 };
 
 use clap::{Parser, ValueEnum};
@@ -49,6 +51,8 @@ struct Args {
     install: bool,
     #[arg(long)]
     force: bool,
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -112,12 +116,15 @@ impl Args {
     }
 }
 
-fn run(args: Args) -> Result<(), Error> {
+fn run(args: &Args, warnings: &mut Vec<String>) -> Result<PathBuf, Error> {
     let config = args.merge()?;
-    let template = rake_core::ensure_template(&TemplateOptions::default())?;
-    let output = std::env::current_dir()?;
+    let output = std::env::current_dir()
+        .map_err(|error| Error::Unexpected(format!("current directory: {error}")))?;
+    let template = rake_core::ensure_template(&TemplateOptions::default())
+        .map_err(|error| Error::MissingTemplate(error.to_string()))?;
     let app = rake_core::assemble(&config, &template, &output, args.force)?;
-    for warning in &app.warnings {
+    *warnings = app.warnings;
+    for warning in warnings.iter() {
         eprintln!("warning: {warning}");
     }
     let result = match Target::from(args.target) {
@@ -128,14 +135,46 @@ fn run(args: Args) -> Result<(), Error> {
         rake_core::install(&app.path, Path::new("/Applications"))?;
     }
     eprintln!("{}", result.display());
-    Ok(())
+    Ok(app.path)
 }
 
 fn main() {
-    if let Err(error) = run(Args::parse()) {
-        eprintln!("error: {error}");
-        process::exit(error.exit_code());
+    let started = Instant::now();
+    let arguments: Vec<_> = std::env::args_os().collect();
+    let json = arguments
+        .iter()
+        .skip(1)
+        .take_while(|arg| *arg != "--")
+        .any(|arg| arg == "--json");
+    let mut warnings = Vec::new();
+    let (app_path, error, code) = match Args::try_parse_from(arguments) {
+        Ok(args) => match run(&args, &mut warnings) {
+            Ok(path) => (Some(path), None, 0),
+            Err(error) => {
+                eprintln!("error: {error}");
+                (None, Some(error.to_string()), error.exit_code())
+            }
+        },
+        Err(error) => {
+            let code = error.exit_code();
+            eprint!("{error}");
+            (None, (code != 0).then(|| error.to_string()), code)
+        }
+    };
+    if json {
+        let result = serde_json::json!({
+            "status": if code == 0 { "success" } else { "error" },
+            "app_path": app_path,
+            "duration": started.elapsed().as_secs_f64(),
+            "warnings": warnings,
+            "error": error,
+        });
+        if let Err(error) = writeln!(io::stdout().lock(), "{result}") {
+            eprintln!("error: JSON output: {error}");
+            process::exit(1);
+        }
     }
+    process::exit(code);
 }
 
 #[cfg(test)]

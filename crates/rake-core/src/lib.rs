@@ -74,6 +74,9 @@ impl Default for TemplateOptions {
 
 #[derive(Debug)]
 pub enum Error {
+    Unexpected(String),
+    MissingEnvironment(String),
+    MissingTemplate(String),
     UnsupportedTarget(String),
     MissingCacheDirectory,
     Io(io::Error),
@@ -84,15 +87,20 @@ pub enum Error {
     InvalidTemplate(String),
     ChecksumMismatch,
     InvalidInput(String),
-    Assembly(String),
 }
 
 impl Error {
     pub fn exit_code(&self) -> i32 {
         match self {
+            Self::Unexpected(_) => 1,
             Self::InvalidInput(_) => 2,
-            Self::Io(_) | Self::Assembly(_) => 3,
-            _ => 4,
+            Self::Io(_) | Self::Command { .. } => 3,
+            Self::MissingEnvironment(_)
+            | Self::MissingTemplate(_)
+            | Self::UnsupportedTarget(_)
+            | Self::MissingCacheDirectory
+            | Self::InvalidTemplate(_)
+            | Self::ChecksumMismatch => 4,
         }
     }
 }
@@ -100,6 +108,9 @@ impl Error {
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Unexpected(detail) => write!(f, "{detail}"),
+            Self::MissingEnvironment(detail) => write!(f, "missing environment: {detail}"),
+            Self::MissingTemplate(detail) => write!(f, "template unavailable: {detail}"),
             Self::UnsupportedTarget(target) => write!(f, "unsupported template target: {target}"),
             Self::MissingCacheDirectory => write!(f, "cannot find the user cache directory"),
             Self::Io(error) => write!(f, "{error}"),
@@ -107,7 +118,6 @@ impl fmt::Display for Error {
             Self::InvalidTemplate(detail) => write!(f, "invalid template: {detail}"),
             Self::ChecksumMismatch => write!(f, "template checksum mismatch"),
             Self::InvalidInput(detail) => write!(f, "{detail}"),
-            Self::Assembly(detail) => write!(f, "app assembly: {detail}"),
         }
     }
 }
@@ -177,8 +187,7 @@ pub fn assemble(
     }
     let staging = Staging::new(output_dir)?;
     let bundle = staging.0.join(format!("{name}.app"));
-    run(Command::new("/usr/bin/ditto").arg(template).arg(&bundle))
-        .map_err(|error| Error::Assembly(error.to_string()))?;
+    run(Command::new("/usr/bin/ditto").arg(template).arg(&bundle))?;
     let contents = bundle.join("Contents");
     fs::rename(
         contents.join("MacOS/rake-runtime"),
@@ -198,8 +207,7 @@ pub fn assemble(
     for (key, value) in metadata {
         run(Command::new("/usr/bin/plutil")
             .args(["-replace", key, "-string", value])
-            .arg(contents.join("Info.plist")))
-        .map_err(|error| Error::Assembly(error.to_string()))?;
+            .arg(contents.join("Info.plist")))?;
     }
     let resources = contents.join("Resources");
     fs::create_dir_all(resources.join("inject"))?;
@@ -728,9 +736,15 @@ fn run(command: &mut Command) -> Result<String, Error> {
         Some("iconutil") => "iconutil",
         _ => "tar",
     };
-    let output = command.output().map_err(|error| Error::Command {
-        program,
-        detail: error.to_string(),
+    let output = command.output().map_err(|error| {
+        if error.kind() == io::ErrorKind::NotFound {
+            Error::MissingEnvironment(format!("{program}: {error}"))
+        } else {
+            Error::Command {
+                program,
+                detail: error.to_string(),
+            }
+        }
     })?;
     if !output.status.success() {
         return Err(Error::Command {
@@ -1061,7 +1075,7 @@ mod tests {
             "{detail}"
         );
         assert!(error.to_string().contains(detail));
-        assert_eq!(error.exit_code(), 4);
+        assert_eq!(error.exit_code(), 3);
         assert_eq!(fs::read_dir(output).unwrap().count(), 0);
         let error = assemble(&config, &template, &existing_output, true).unwrap_err();
         assert!(error.to_string().contains("detritus not allowed"));
@@ -1285,7 +1299,13 @@ mod tests {
         let original = fs::read(result.path.join("Contents/Info.plist")).unwrap();
         fs::write(template.join("Contents/Info.plist"), "invalid plist").unwrap();
         let error = assemble(&config, &template, &output, true).unwrap_err();
-        assert!(matches!(error, Error::Assembly(_)));
+        assert!(matches!(
+            error,
+            Error::Command {
+                program: "plutil",
+                ..
+            }
+        ));
         assert!(error.to_string().contains("plutil"));
         assert_eq!(
             fs::read(result.path.join("Contents/Info.plist")).unwrap(),
