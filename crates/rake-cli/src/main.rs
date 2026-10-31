@@ -62,6 +62,7 @@ enum OutputTarget {
     Dmg,
     Tarball,
     Deb,
+    Zip,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -92,6 +93,7 @@ impl From<OutputTarget> for Target {
             OutputTarget::Dmg => Self::Dmg,
             OutputTarget::Tarball => Self::Tarball,
             OutputTarget::Deb => Self::Deb,
+            OutputTarget::Zip => Self::Zip,
         }
     }
 }

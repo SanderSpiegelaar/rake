@@ -19,6 +19,9 @@ fn main() -> Result<(), Box<dyn Error>> {
 }
 
 fn template(arch: Option<&str>) -> Result<(), Box<dyn Error>> {
+    if cfg!(windows) {
+        return windows_template(arch);
+    }
     if cfg!(target_os = "linux") {
         return linux_template(arch);
     }
@@ -109,6 +112,59 @@ fn template(arch: Option<&str>) -> Result<(), Box<dyn Error>> {
     fs::write(output.join("SHA256SUMS"), &checksum.stdout)?;
     println!("{}", output.join(archive).display());
     print!("{}", String::from_utf8(checksum.stdout)?);
+    Ok(())
+}
+
+fn windows_template(arch: Option<&str>) -> Result<(), Box<dyn Error>> {
+    if arch.unwrap_or("x86_64") != "x86_64" || std::env::consts::ARCH != "x86_64" {
+        return Err("Windows templates require an x86_64 Windows host".into());
+    }
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+    let output = root.join("target/template");
+    let bundle = output.join("Rake");
+    run(Command::new("cargo").current_dir(root).args([
+        "build",
+        "--release",
+        "--locked",
+        "--package",
+        "rake-runtime",
+        "--target-dir",
+        "target",
+    ]))?;
+    if bundle.exists() {
+        fs::remove_dir_all(&bundle)?;
+    }
+    fs::create_dir_all(&bundle)?;
+    fs::copy(
+        root.join("target/release/rake-runtime.exe"),
+        bundle.join("rake-runtime.exe"),
+    )?;
+    fs::write(
+        bundle.join("icon.png"),
+        include_bytes!("../../assets/icon.png"),
+    )?;
+    let archive = format!(
+        "rake-template-{}-windows-x86_64.tar.gz",
+        env!("CARGO_PKG_VERSION")
+    );
+    run(Command::new("tar")
+        .current_dir(&output)
+        .args(["-czf", &archive, "Rake"]))?;
+    let checksum = Command::new("powershell.exe")
+        .args(["-NoProfile", "-NonInteractive", "-Command", "$ErrorActionPreference = 'Stop'; (Get-FileHash -LiteralPath $env:RAKE_HASH_PATH -Algorithm SHA256).Hash.ToLowerInvariant()"])
+        .env("RAKE_HASH_PATH", output.join(&archive))
+        .output()?;
+    if !checksum.status.success() {
+        return Err("Get-FileHash failed".into());
+    }
+    fs::write(
+        output.join("SHA256SUMS"),
+        format!(
+            "{}  {archive}\n",
+            String::from_utf8(checksum.stdout)?.trim()
+        ),
+    )?;
+    println!("{}", output.join(archive).display());
     Ok(())
 }
 
