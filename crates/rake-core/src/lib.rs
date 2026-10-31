@@ -244,7 +244,7 @@ pub fn assemble(
             Icon::Path(PathBuf::from(source))
         }
     });
-    let warnings = install_icon(&config.url, icon.as_ref(), &resources, &staging.0)?;
+    let warnings = install_icon(&config.url, icon.as_ref(), &resources)?;
     sign(&bundle)?;
     let old = staging.0.join("old.app");
     let exists = check_destination()?;
@@ -407,12 +407,19 @@ fn verify_signature(app: &Path) -> Result<(), Error> {
     Ok(())
 }
 
-fn install_icon(
-    page: &str,
-    icon: Option<&Icon>,
-    resources: &Path,
-    staging: &Path,
-) -> Result<Vec<String>, Error> {
+fn install_icon(page: &str, icon: Option<&Icon>, resources: &Path) -> Result<Vec<String>, Error> {
+    match prepare_icon(page, icon, &resources.join(ICON_FILE)) {
+        Ok(_) => Ok(Vec::new()),
+        Err(Error::InvalidInput(message)) if icon.is_none() => Ok(vec![message]),
+        Err(error) => Err(error),
+    }
+}
+
+/// Write a converted ICNS icon and return its PNG preview. Discovery failure leaves
+/// the destination unchanged. The destination's parent directory must exist.
+pub fn prepare_icon(page: &str, icon: Option<&Icon>, destination: &Path) -> Result<Vec<u8>, Error> {
+    let work = Staging::new(destination.parent().unwrap_or(Path::new(".")))?;
+    let staging = &work.0;
     let downloaded = staging.join("downloaded-icon");
     let converted = staging.join(ICON_FILE);
     if let Some(icon) = icon {
@@ -424,8 +431,9 @@ fn install_icon(
             }
         };
         convert_icon(&source, &converted, staging)?;
-        fs::copy(converted, resources.join(ICON_FILE))?;
-        return Ok(Vec::new());
+        let preview = fs::read(staging.join("source.png"))?;
+        fs::copy(converted, destination)?;
+        return Ok(preview);
     }
 
     let html_path = staging.join("page.html");
@@ -437,13 +445,14 @@ fn install_icon(
         if fetch_icon(&candidate, &downloaded).is_ok()
             && convert_icon(&downloaded, &converted, staging).is_ok()
         {
-            fs::copy(&converted, resources.join(ICON_FILE))?;
-            return Ok(Vec::new());
+            let preview = fs::read(staging.join("source.png"))?;
+            fs::copy(&converted, destination)?;
+            return Ok(preview);
         }
     }
-    Ok(vec![format!(
+    Err(Error::InvalidInput(format!(
         "No usable icon found for {page}; keeping the template's default icon"
-    )])
+    )))
 }
 
 fn fetch_icon(source: &str, destination: &Path) -> Result<String, Error> {
