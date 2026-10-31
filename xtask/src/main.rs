@@ -132,9 +132,13 @@ mod tests {
 
     #[test]
     fn committed_schema_is_current() {
+        // GPUI enables serde_json/preserve_order, but JSON object order is not part of the schema.
         assert_eq!(
-            include_str!("../../schema/rake.schema.json"),
-            schema_json(),
+            serde_json::from_str::<serde_json::Value>(include_str!(
+                "../../schema/rake.schema.json"
+            ))
+            .unwrap(),
+            serde_json::from_str::<serde_json::Value>(&schema_json()).unwrap(),
             "Run cargo xtask schema to update the committed schema"
         );
     }
