@@ -7,7 +7,7 @@ use tao::{
     event_loop::{ControlFlow, EventLoopBuilder},
     window::{Theme, WindowBuilder},
 };
-use wry::{NewWindowResponse, WebViewBuilder};
+use wry::{NewWindowResponse, PageLoadEvent, WebViewBuilder};
 
 mod navigation;
 
@@ -23,6 +23,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             show_error(&error);
             std::process::exit(1);
         });
+    if config.debug {
+        eprintln!("Rake: config loaded for {}", config.url);
+    }
     let event_loop = EventLoopBuilder::<String>::with_user_event().build();
     let navigation = Rc::new(NavigationPolicy::new(&config));
     let mut window = WindowBuilder::new()
@@ -45,7 +48,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .with_fullsize_content_view(true);
     }
     let window = Rc::new(window.build(&event_loop)?);
-    let mut webview = WebViewBuilder::new().with_url(&config.url);
+    let mut webview = WebViewBuilder::new()
+        .with_url(&config.url)
+        .with_devtools(config.debug);
     for script in scripts {
         webview = webview.with_initialization_script(script);
     }
@@ -59,6 +64,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             NewWindowResponse::Deny
         });
+    if config.debug {
+        webview = webview.with_on_page_load_handler(|event, url| {
+            let state = match event {
+                PageLoadEvent::Started => "started",
+                PageLoadEvent::Finished => "finished",
+            };
+            eprintln!("Rake: page load {state}: {url}");
+        });
+    }
     if let Some(user_agent) = &config.user_agent {
         webview = webview.with_user_agent(user_agent);
     }
@@ -89,6 +103,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             });
     }
     let webview = webview.build(window.as_ref())?;
+    if config.debug {
+        webview.open_devtools();
+    }
 
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Wait;
