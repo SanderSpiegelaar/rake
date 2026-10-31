@@ -1,0 +1,5 @@
+{
+  "url": "https://example.com",
+  "name": "Rake Smoke Test",
+  "identifier": "app.rake.smoke-test"
+}
