@@ -102,6 +102,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 _ => {}
             });
     }
+    #[cfg(target_os = "linux")]
+    let webview = {
+        use tao::platform::unix::WindowExtUnix;
+        use wry::WebViewBuilderExtUnix;
+        webview.build_gtk(window.default_vbox().expect("tao creates a GTK box"))?
+    };
+    #[cfg(not(target_os = "linux"))]
     let webview = webview.build(window.as_ref())?;
     if config.debug {
         webview.open_devtools();
@@ -150,6 +157,7 @@ fn load_config(
     executable: &Path,
     fallback: Option<OsString>,
 ) -> Result<(RakeConfig, Vec<String>), String> {
+    #[cfg(target_os = "macos")]
     let bundled = executable
         .parent()
         .and_then(Path::parent)
@@ -160,6 +168,11 @@ fn load_config(
             )
         })?
         .join("Resources/config.json");
+    #[cfg(not(target_os = "macos"))]
+    let bundled = executable
+        .parent()
+        .ok_or("Cannot find executable directory")?
+        .join("config.json");
     let path = if bundled.exists() {
         bundled
     } else if let Some(path) = fallback {
@@ -275,6 +288,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "macos")]
     fn loads_bundle_before_fallback_and_reports_config_errors() {
         let root = env::temp_dir().join(format!("rake-config-test-{}", std::process::id()));
         let macos = root.join("Contents/MacOS");

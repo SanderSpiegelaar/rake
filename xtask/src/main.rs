@@ -19,6 +19,9 @@ fn main() -> Result<(), Box<dyn Error>> {
 }
 
 fn template(arch: Option<&str>) -> Result<(), Box<dyn Error>> {
+    if cfg!(target_os = "linux") {
+        return linux_template(arch);
+    }
     if !cfg!(target_os = "macos") {
         return Err("template requires macOS".into());
     }
@@ -106,6 +109,59 @@ fn template(arch: Option<&str>) -> Result<(), Box<dyn Error>> {
     fs::write(output.join("SHA256SUMS"), &checksum.stdout)?;
     println!("{}", output.join(archive).display());
     print!("{}", String::from_utf8(checksum.stdout)?);
+    Ok(())
+}
+
+fn linux_template(arch: Option<&str>) -> Result<(), Box<dyn Error>> {
+    let host = match std::env::consts::ARCH {
+        "aarch64" => "arm64",
+        "x86_64" => "x86_64",
+        arch => return Err(format!("unsupported Linux architecture: {arch}").into()),
+    };
+    let arch = arch.unwrap_or(host);
+    if arch != host {
+        return Err("Linux templates must be built on the matching host architecture".into());
+    }
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+    let output = root.join("target/template");
+    let bundle = output.join("Rake");
+    run(Command::new("cargo").current_dir(root).args([
+        "build",
+        "--release",
+        "--locked",
+        "--package",
+        "rake-runtime",
+        "--target-dir",
+        "target",
+    ]))?;
+    if bundle.exists() {
+        fs::remove_dir_all(&bundle)?;
+    }
+    fs::create_dir_all(&bundle)?;
+    fs::copy(
+        root.join("target/release/rake-runtime"),
+        bundle.join("rake-runtime"),
+    )?;
+    fs::write(
+        bundle.join("icon.png"),
+        include_bytes!("../../assets/icon.png"),
+    )?;
+    let archive = format!(
+        "rake-template-{}-linux-{arch}.tar.gz",
+        env!("CARGO_PKG_VERSION")
+    );
+    run(Command::new("tar")
+        .current_dir(&output)
+        .args(["-czf", &archive, "Rake"]))?;
+    let checksum = Command::new("sha256sum")
+        .current_dir(&output)
+        .arg(&archive)
+        .output()?;
+    if !checksum.status.success() {
+        return Err("sha256sum failed".into());
+    }
+    fs::write(output.join("SHA256SUMS"), &checksum.stdout)?;
+    println!("{}", output.join(archive).display());
     Ok(())
 }
 

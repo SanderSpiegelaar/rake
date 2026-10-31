@@ -60,6 +60,8 @@ struct Args {
 enum OutputTarget {
     App,
     Dmg,
+    Tarball,
+    Deb,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -70,13 +72,16 @@ enum Architecture {
     Universal,
 }
 
-impl From<Architecture> for TemplateTarget {
-    fn from(arch: Architecture) -> Self {
-        match arch {
-            Architecture::Arm64 => Self::MacosArm64,
-            Architecture::X86_64 => Self::MacosX86_64,
-            Architecture::Universal => Self::MacosUniversal,
-        }
+impl Architecture {
+    fn template(self) -> Result<TemplateTarget, Error> {
+        TemplateTarget::resolve(
+            std::env::consts::OS,
+            match self {
+                Self::Arm64 => "arm64",
+                Self::X86_64 => "x86_64",
+                Self::Universal => "universal",
+            },
+        )
     }
 }
 
@@ -85,6 +90,8 @@ impl From<OutputTarget> for Target {
         match target {
             OutputTarget::App => Self::App,
             OutputTarget::Dmg => Self::Dmg,
+            OutputTarget::Tarball => Self::Tarball,
+            OutputTarget::Deb => Self::Deb,
         }
     }
 }
@@ -126,7 +133,7 @@ fn run(args: &Args, warnings: &mut Vec<String>) -> Result<PathBuf, Error> {
         &config,
         &BuildOptions {
             template: TemplateOptions {
-                target: args.arch.map(TemplateTarget::from),
+                target: args.arch.map(Architecture::template).transpose()?,
                 ..Default::default()
             },
             output_dir: output,
@@ -370,6 +377,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "macos")]
     fn architecture_is_independent_of_output_format() {
         let defaults = Args::try_parse_from(["rake", "https://example.com"]).unwrap();
         assert!(defaults.arch.is_none());
@@ -388,7 +396,10 @@ mod tests {
                     target,
                 ])
                 .unwrap();
-                assert_eq!(args.arch.map(TemplateTarget::from), Some(expected));
+                assert_eq!(
+                    args.arch.map(|arch| arch.template().unwrap()),
+                    Some(expected)
+                );
                 assert!(matches!(
                     (args.target, target),
                     (OutputTarget::App, "app") | (OutputTarget::Dmg, "dmg")
@@ -404,5 +415,28 @@ mod tests {
     fn clap_definition_is_consistent() {
         use clap::CommandFactory;
         Args::command().debug_assert();
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn linux_architecture_and_package_flags_resolve_to_linux_templates() {
+        for (arch, expected) in [
+            ("arm64", TemplateTarget::LinuxArm64),
+            ("x86_64", TemplateTarget::LinuxX86_64),
+        ] {
+            for target in ["app", "tarball", "deb"] {
+                let args = Args::try_parse_from([
+                    "rake",
+                    "https://example.com",
+                    "--arch",
+                    arch,
+                    "--target",
+                    target,
+                ])
+                .unwrap();
+                assert_eq!(args.arch.unwrap().template().unwrap(), expected);
+            }
+        }
+        assert!(Architecture::Universal.template().is_err());
     }
 }
