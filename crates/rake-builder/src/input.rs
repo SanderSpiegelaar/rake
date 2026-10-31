@@ -14,8 +14,12 @@ actions!(
         Delete,
         Left,
         Right,
+        Up,
+        Down,
         SelectLeft,
         SelectRight,
+        SelectUp,
+        SelectDown,
         SelectAll,
         Home,
         End,
@@ -52,6 +56,10 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("right", Right, Some("TextInput")),
         KeyBinding::new("shift-left", SelectLeft, Some("TextInput")),
         KeyBinding::new("shift-right", SelectRight, Some("TextInput")),
+        KeyBinding::new("up", Up, Some("TextInput")),
+        KeyBinding::new("down", Down, Some("TextInput")),
+        KeyBinding::new("shift-up", SelectUp, Some("TextInput")),
+        KeyBinding::new("shift-down", SelectDown, Some("TextInput")),
         KeyBinding::new("cmd-a", SelectAll, Some("TextInput")),
         KeyBinding::new("cmd-v", Paste, Some("TextInput")),
         KeyBinding::new("cmd-c", Copy, Some("TextInput")),
@@ -142,6 +150,33 @@ impl TextInput {
 
     fn select_right(&mut self, _: &SelectRight, window: &mut Window, cx: &mut Context<Self>) {
         self.select(self.next(), true, window, cx);
+    }
+
+    fn vertical(&self, down: bool) -> usize {
+        let position = self.cursor_position(self.cursor());
+        let row = (position.y / px(22.)) as usize;
+        let target = if down { row + 1 } else { row.wrapping_sub(1) };
+        match self.lines.get(target) {
+            Some(line) => self.starts[target] + line.closest_index_for_x(position.x),
+            None if down => self.content.len(),
+            None => 0,
+        }
+    }
+
+    fn up(&mut self, _: &Up, window: &mut Window, cx: &mut Context<Self>) {
+        self.select(self.vertical(false), false, window, cx);
+    }
+
+    fn down(&mut self, _: &Down, window: &mut Window, cx: &mut Context<Self>) {
+        self.select(self.vertical(true), false, window, cx);
+    }
+
+    fn select_up(&mut self, _: &SelectUp, window: &mut Window, cx: &mut Context<Self>) {
+        self.select(self.vertical(false), true, window, cx);
+    }
+
+    fn select_down(&mut self, _: &SelectDown, window: &mut Window, cx: &mut Context<Self>) {
+        self.select(self.vertical(true), true, window, cx);
     }
 
     fn select_all(&mut self, _: &SelectAll, window: &mut Window, cx: &mut Context<Self>) {
@@ -495,6 +530,10 @@ impl Render for TextInput {
             .on_action(cx.listener(Self::right))
             .on_action(cx.listener(Self::select_left))
             .on_action(cx.listener(Self::select_right))
+            .on_action(cx.listener(Self::up))
+            .on_action(cx.listener(Self::down))
+            .on_action(cx.listener(Self::select_up))
+            .on_action(cx.listener(Self::select_down))
             .on_action(cx.listener(Self::select_all))
             .on_action(cx.listener(Self::home))
             .on_action(cx.listener(Self::end))
