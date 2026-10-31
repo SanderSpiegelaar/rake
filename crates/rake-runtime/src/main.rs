@@ -10,7 +10,7 @@ use tao::{
 use wry::WebViewBuilder;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let config = env::current_exe()
+    let (config, scripts) = env::current_exe()
         .map_err(|error| {
             format!("Cannot locate the executable to find ../Resources/config.json: {error}")
         })
@@ -41,6 +41,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let window = Rc::new(window.build(&event_loop)?);
     let mut webview = WebViewBuilder::new().with_url(&config.url);
+    for script in scripts {
+        webview = webview.with_initialization_script(script);
+    }
     if let Some(user_agent) = &config.user_agent {
         webview = webview.with_user_agent(user_agent);
     }
@@ -106,7 +109,10 @@ fn show_error(message: &str) {
     eprintln!("{message}");
 }
 
-fn load_config(executable: &Path, fallback: Option<OsString>) -> Result<RakeConfig, String> {
+fn load_config(
+    executable: &Path,
+    fallback: Option<OsString>,
+) -> Result<(RakeConfig, Vec<String>), String> {
     let bundled = executable
         .parent()
         .and_then(Path::parent)
@@ -134,12 +140,102 @@ fn load_config(executable: &Path, fallback: Option<OsString>) -> Result<RakeConf
     config
         .validate()
         .map_err(|error| format!("Invalid config {}: {error}", path.display()))?;
-    Ok(config)
+    let scripts = load_inject_scripts(&config, path.parent().unwrap_or(Path::new(".")))?;
+    Ok((config, scripts))
+}
+
+fn load_inject_scripts(config: &RakeConfig, resources: &Path) -> Result<Vec<String>, String> {
+    config
+        .inject
+        .iter()
+        .map(|file| {
+            if file.as_os_str().is_empty()
+                || file.components().any(|component| {
+                    !matches!(
+                        component,
+                        std::path::Component::Normal(_) | std::path::Component::CurDir
+                    )
+                })
+            {
+                return Err(format!("Inject file must be relative to inject/: {}", file.display()));
+            }
+            let path = resources.join("inject").join(file);
+            let contents = fs::read_to_string(&path)
+                .map_err(|error| format!("Cannot read inject file {}: {error}", path.display()))?;
+            match file.extension().and_then(|extension| extension.to_str()) {
+                Some("js") => Ok(contents),
+                Some("css") => {
+                    let css = serde_json::to_string(&contents).map_err(|error| {
+                        format!("Cannot encode inject file {}: {error}", path.display())
+                    })?;
+                    Ok(format!(
+                        r#"(() => {{
+                            const apply = () => {{
+                                const style = document.createElement("style");
+                                style.textContent = {css};
+                                document.head.appendChild(style);
+                            }};
+                            if (document.readyState === "loading") {{
+                                document.addEventListener("DOMContentLoaded", apply, {{ once: true }});
+                            }} else {{
+                                apply();
+                            }}
+                        }})();"#
+                    ))
+                }
+                _ => Err(format!("Inject file must be CSS or JS: {}", path.display())),
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn loads_inject_files_in_order_and_names_errors() {
+        let root = env::temp_dir().join(format!("rake-inject-test-{}", std::process::id()));
+        fs::create_dir_all(root.join("inject/nested")).unwrap();
+        let css = "body::before { content: 'quotes \\\" and `ticks` ${value}'; }\n";
+        let js = "window.injected = true;";
+        fs::write(root.join("inject/nested/style.css"), css).unwrap();
+        fs::write(root.join("inject/script.js"), js).unwrap();
+        let mut config = RakeConfig::new("https://example.com");
+        assert!(load_inject_scripts(&config, &root).unwrap().is_empty());
+        config.inject = vec!["nested/style.css".into(), "script.js".into()];
+        let scripts = load_inject_scripts(&config, &root).unwrap();
+        assert_eq!(scripts.len(), 2);
+        assert!(scripts[0].contains(&serde_json::to_string(css).unwrap()));
+        assert!(scripts[0].contains("DOMContentLoaded"));
+        assert_eq!(scripts[1], js);
+
+        for (file, reason) in [
+            ("missing.js", "Cannot read inject file"),
+            ("../script.js", "must be relative"),
+            ("/script.js", "must be relative"),
+        ] {
+            config.inject = vec![file.into()];
+            let error = load_inject_scripts(&config, &root).unwrap_err();
+            assert!(error.contains(file), "{error}");
+            assert!(error.contains(reason), "{error}");
+        }
+        fs::write(root.join("inject/file.txt"), "text").unwrap();
+        config.inject = vec!["file.txt".into()];
+        assert!(
+            load_inject_scripts(&config, &root)
+                .unwrap_err()
+                .contains("file.txt")
+        );
+        fs::write(root.join("inject/invalid.js"), [0xff]).unwrap();
+        config.inject = vec!["invalid.js".into()];
+        assert!(
+            load_inject_scripts(&config, &root)
+                .unwrap_err()
+                .contains("invalid.js")
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn loads_bundle_before_fallback_and_reports_config_errors() {
@@ -160,6 +256,7 @@ mod tests {
         assert_eq!(
             load_config(&exe, Some(fallback.clone().into_os_string()))
                 .unwrap()
+                .0
                 .url,
             "https://www.rust-lang.org"
         );
@@ -167,8 +264,36 @@ mod tests {
         assert_eq!(
             load_config(&exe, Some(fallback.clone().into_os_string()))
                 .unwrap()
+                .0
                 .url,
             "https://example.com"
+        );
+
+        fs::create_dir_all(resources.join("inject")).unwrap();
+        fs::write(resources.join("inject/bundle.js"), "window.bundled = true;").unwrap();
+        fs::write(
+            &bundled,
+            r#"{"url":"https://example.com","inject":["bundle.js"]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            load_config(&exe, None).unwrap().1,
+            ["window.bundled = true;"]
+        );
+
+        fs::create_dir_all(root.join("inject")).unwrap();
+        fs::write(root.join("inject/dev.js"), "window.dev = true;").unwrap();
+        fs::write(
+            &fallback,
+            r#"{"url":"https://example.com","inject":["dev.js"]}"#,
+        )
+        .unwrap();
+        fs::remove_file(&bundled).unwrap();
+        assert_eq!(
+            load_config(&exe, Some(fallback.clone().into_os_string()))
+                .unwrap()
+                .1,
+            ["window.dev = true;"]
         );
 
         for (contents, reason) in [
