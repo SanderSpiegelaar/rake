@@ -33,6 +33,7 @@ fn default_height() -> u32 {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct RakeConfig {
     #[serde(default = "default_schema_version")]
