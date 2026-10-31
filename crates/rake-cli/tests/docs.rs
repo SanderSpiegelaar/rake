@@ -1,4 +1,4 @@
-use std::process::Command;
+use std::{collections::HashSet, process::Command};
 
 #[test]
 fn cli_reference_covers_every_help_flag() {
@@ -12,7 +12,9 @@ fn cli_reference_covers_every_help_flag() {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    let reference = include_str!("../../../docs/cli-usage.md");
+    let reference: HashSet<_> = include_str!("../../../docs/cli-usage.md")
+        .split(|c: char| !c.is_ascii_alphanumeric() && c != '-')
+        .collect();
     let flags: Vec<_> = help
         .split_whitespace()
         .map(|word| word.trim_end_matches(','))
