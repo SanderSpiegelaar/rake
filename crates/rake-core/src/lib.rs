@@ -134,7 +134,6 @@ pub fn assemble(
     template: &Path,
     output_dir: &Path,
     force: bool,
-    icon: Option<&Icon>,
 ) -> Result<AssemblyResult, Error> {
     config
         .validate()
@@ -223,7 +222,14 @@ pub fn assemble(
     let json = serde_json::to_vec_pretty(&written)
         .map_err(|error| Error::InvalidInput(error.to_string()))?;
     fs::write(resources.join("config.json"), json)?;
-    let warnings = install_icon(&config.url, icon, &resources, &staging.0)?;
+    let icon = config.icon.as_ref().map(|source| {
+        if Url::parse(source).is_ok_and(|url| matches!(url.scheme(), "http" | "https")) {
+            Icon::Url(source.clone())
+        } else {
+            Icon::Path(PathBuf::from(source))
+        }
+    });
+    let warnings = install_icon(&config.url, icon.as_ref(), &resources, &staging.0)?;
     sign(&bundle)?;
     let old = staging.0.join("old.app");
     let exists = check_destination()?;
@@ -775,7 +781,7 @@ mod tests {
 
     fn install_fixture() -> (Staging, PathBuf, PathBuf) {
         let (temp, template, config) = assembly_fixture();
-        let app = assemble(&config, &template, &temp.0.join("out"), false, None)
+        let app = assemble(&config, &template, &temp.0.join("out"), false)
             .unwrap()
             .path;
         let applications = temp.0.join("Applications");
@@ -927,10 +933,14 @@ mod tests {
         let mut config = RakeConfig::new("https://example.com");
         config.name = Some("Rake Install Proof".into());
         config.identifier = Some("org.example.rake-install-proof".into());
-        let icon = Icon::Path(template.join("Contents/Resources").join(ICON_FILE));
-        let app = assemble(&config, &template, &output, true, Some(&icon))
-            .unwrap()
-            .path;
+        config.icon = Some(
+            template
+                .join("Contents/Resources")
+                .join(ICON_FILE)
+                .to_string_lossy()
+                .into_owned(),
+        );
+        let app = assemble(&config, &template, &output, true).unwrap().path;
         let image = package_dmg(&app, &output, true).unwrap();
         let mount = Staging::new(&output).unwrap();
         run(Command::new("/usr/bin/hdiutil")
@@ -1017,7 +1027,7 @@ mod tests {
         fs::write(site.join("bad.png"), "not an image").unwrap();
         let server = Server::start(site);
         config.url = format!("{}/index.html", server.url);
-        let result = assemble(&config, &template, &temp.0.join("out"), false, None).unwrap();
+        let result = assemble(&config, &template, &temp.0.join("out"), false).unwrap();
         assert_eq!(result.warnings.len(), 1);
         assert!(result.warnings[0].contains("keeping the template's default icon"));
         assert_eq!(
@@ -1030,7 +1040,7 @@ mod tests {
     fn signing_failure_surfaces_codesign_output_and_does_not_publish() {
         let (temp, template, config) = assembly_fixture();
         let existing_output = temp.0.join("existing");
-        let existing = assemble(&config, &template, &existing_output, false, None)
+        let existing = assemble(&config, &template, &existing_output, false)
             .unwrap()
             .path;
         let original = fs::read(existing.join("Contents/_CodeSignature/CodeResources")).unwrap();
@@ -1041,7 +1051,7 @@ mod tests {
             .unwrap();
         assert!(attribute.success());
         let output = temp.0.join("out");
-        let error = assemble(&config, &template, &output, false, None).unwrap_err();
+        let error = assemble(&config, &template, &output, false).unwrap_err();
         let Error::Command { program, detail } = &error else {
             panic!("expected codesign failure, got {error}");
         };
@@ -1053,7 +1063,7 @@ mod tests {
         assert!(error.to_string().contains(detail));
         assert_eq!(error.exit_code(), 4);
         assert_eq!(fs::read_dir(output).unwrap().count(), 0);
-        let error = assemble(&config, &template, &existing_output, true, None).unwrap_err();
+        let error = assemble(&config, &template, &existing_output, true).unwrap_err();
         assert!(error.to_string().contains("detritus not allowed"));
         assert_eq!(
             fs::read(existing.join("Contents/_CodeSignature/CodeResources")).unwrap(),
@@ -1072,13 +1082,18 @@ mod tests {
         assert!(complete_bundle(&template), "Run cargo xtask template first");
         let mut config = RakeConfig::new("https://example.com");
         config.name = Some("Rake Signing Proof".into());
-        let icon = Icon::Path(template.join("Contents/Resources").join(ICON_FILE));
+        config.icon = Some(
+            template
+                .join("Contents/Resources")
+                .join(ICON_FILE)
+                .to_string_lossy()
+                .into_owned(),
+        );
         let result = assemble(
             &config,
             &template,
             &root.join("target/rake018-verification"),
             true,
-            Some(&icon),
         )
         .unwrap();
         let verification = Command::new("/usr/bin/codesign")
@@ -1093,17 +1108,18 @@ mod tests {
 
     #[test]
     fn explicit_icon_failures_do_not_publish_an_app() {
-        let (temp, template, config) = assembly_fixture();
+        let (temp, template, mut config) = assembly_fixture();
         let bad = temp.0.join("bad.png");
         fs::write(&bad, "not an image").unwrap();
         let output = temp.0.join("out");
         for icon in [
-            Icon::Path(temp.0.join("missing.png")),
-            Icon::Path(bad),
-            Icon::Url("http://127.0.0.1:1/missing.png".into()),
-            Icon::Url("file:///etc/passwd".into()),
+            temp.0.join("missing.png").to_string_lossy().into_owned(),
+            bad.to_string_lossy().into_owned(),
+            "http://127.0.0.1:1/missing.png".into(),
+            "file:///etc/passwd".into(),
         ] {
-            assert!(assemble(&config, &template, &output, false, Some(&icon)).is_err());
+            config.icon = Some(icon);
+            assert!(assemble(&config, &template, &output, false).is_err());
             assert_eq!(fs::read_dir(&output).unwrap().count(), 0);
         }
     }
@@ -1155,12 +1171,12 @@ mod tests {
             let server = Server::start(site);
             let mut config = RakeConfig::new(format!("{}/index.html", server.url));
             config.name = Some(format!("Icon-{case}"));
-            let icon = match case {
-                "path" => Some(Icon::Path(png.clone())),
-                "url" => Some(Icon::Url(format!("{}/explicit.png", server.url))),
+            config.icon = match case {
+                "path" => Some(png.to_string_lossy().into_owned()),
+                "url" => Some(format!("{}/explicit.png", server.url)),
                 _ => None,
             };
-            let result = assemble(&config, &template, &output, true, icon.as_ref()).unwrap();
+            let result = assemble(&config, &template, &output, true).unwrap();
             let icns = result.path.join("Contents/Resources").join(ICON_FILE);
             if case == "none" {
                 assert_eq!(result.warnings.len(), 1);
@@ -1252,7 +1268,7 @@ mod tests {
             let expected_identifier = config.identifier();
             let output = temp.0.join("out");
             let original = fs::read(template.join("Contents/Info.plist")).unwrap();
-            let result = assemble(&config, &template, &output, false, None).unwrap();
+            let result = assemble(&config, &template, &output, false).unwrap();
             assert_bundle_metadata(&result.path, expected_name, &expected_identifier);
             assert_eq!(
                 fs::read(template.join("Contents/Info.plist")).unwrap(),
@@ -1265,10 +1281,10 @@ mod tests {
     fn plist_failure_preserves_existing_app_and_removes_staging() {
         let (temp, template, config) = assembly_fixture();
         let output = temp.0.join("out");
-        let result = assemble(&config, &template, &output, false, None).unwrap();
+        let result = assemble(&config, &template, &output, false).unwrap();
         let original = fs::read(result.path.join("Contents/Info.plist")).unwrap();
         fs::write(template.join("Contents/Info.plist"), "invalid plist").unwrap();
-        let error = assemble(&config, &template, &output, true, None).unwrap_err();
+        let error = assemble(&config, &template, &output, true).unwrap_err();
         assert!(matches!(error, Error::Assembly(_)));
         assert!(error.to_string().contains("plutil"));
         assert_eq!(
@@ -1289,13 +1305,18 @@ mod tests {
         let mut config = RakeConfig::new("https://example.com");
         config.name = Some("Rake Plist Proof".into());
         config.identifier = Some("org.example.rake-plist-proof".into());
-        let icon = Icon::Path(template.join("Contents/Resources").join(ICON_FILE));
+        config.icon = Some(
+            template
+                .join("Contents/Resources")
+                .join(ICON_FILE)
+                .to_string_lossy()
+                .into_owned(),
+        );
         let result = assemble(
             &config,
             &template,
             &root.join("target/rake017-verification"),
             true,
-            Some(&icon),
         )
         .unwrap();
         assert_bundle_metadata(
@@ -1323,7 +1344,7 @@ mod tests {
             fs::write(&file, body).unwrap();
             config.inject.push(file);
         }
-        let result = assemble(&config, &template, &temp.0.join("out"), false, None).unwrap();
+        let result = assemble(&config, &template, &temp.0.join("out"), false).unwrap();
         assert_eq!(result.warnings.len(), 1);
         let bundle = result.path;
         assert!(bundle.ends_with("out/My App.app"));
@@ -1363,18 +1384,16 @@ mod tests {
     fn refuses_overwrite_and_force_replaces_only_after_success() {
         let (temp, template, mut config) = assembly_fixture();
         let output = temp.0.join("out");
-        let bundle = assemble(&config, &template, &output, false, None)
-            .unwrap()
-            .path;
+        let bundle = assemble(&config, &template, &output, false).unwrap().path;
         let marker = bundle.join("marker");
         fs::write(&marker, "keep me").unwrap();
-        let error = assemble(&config, &template, &output, false, None).unwrap_err();
+        let error = assemble(&config, &template, &output, false).unwrap_err();
         assert_eq!(error.exit_code(), 2);
         assert!(error.to_string().contains("--force"));
         assert_eq!(fs::read_to_string(&marker).unwrap(), "keep me");
         config.inject = vec![temp.0.join("missing.js")];
         assert_eq!(
-            assemble(&config, &template, &output, true, None)
+            assemble(&config, &template, &output, true)
                 .unwrap_err()
                 .exit_code(),
             3
@@ -1383,9 +1402,7 @@ mod tests {
         assert_eq!(fs::read_dir(&output).unwrap().count(), 1);
         config.inject.clear();
         assert_eq!(
-            assemble(&config, &template, &output, true, None)
-                .unwrap()
-                .path,
+            assemble(&config, &template, &output, true).unwrap().path,
             bundle
         );
         assert!(!marker.exists());
@@ -1402,7 +1419,7 @@ mod tests {
             fs::write(&file, directory).unwrap();
             config.inject.push(file);
         }
-        let error = assemble(&config, &template, &output, false, None).unwrap_err();
+        let error = assemble(&config, &template, &output, false).unwrap_err();
         assert!(error.to_string().contains("duplicate file name: same.js"));
         assert_eq!(error.exit_code(), 2);
         assert_eq!(fs::read_dir(&output).unwrap().count(), 0);
@@ -1420,7 +1437,7 @@ mod tests {
         ] {
             config.name = Some(name.into());
             assert_eq!(
-                assemble(&config, &template, &output, false, None)
+                assemble(&config, &template, &output, false)
                     .unwrap_err()
                     .exit_code(),
                 2,
@@ -1435,7 +1452,7 @@ mod tests {
         config.name = Some("Rake".into());
         for output in [&temp.0, &template] {
             assert_eq!(
-                assemble(&config, &template, output, true, None)
+                assemble(&config, &template, output, true)
                     .unwrap_err()
                     .exit_code(),
                 2
