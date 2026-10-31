@@ -6,16 +6,10 @@ Measured on 2026-10-31. Rake meets the bundle-size target.
 
 - MacBook Pro, Apple M5 Pro, 18 CPU cores, 48 GB RAM.
 - macOS 27.0.1, build 26A434, arm64.
-- Rake 0.1.0, RAKE-012 commit `7dfbab4414c3eba2982b45cb9121c0581c194421`.
+- Rake 0.1.0, integrated main commit `5a18a157af682232614896ae033e645eb6208984`.
 - Pake CLI 3.17.8, release build for `aarch64-apple-darwin`.
 - Site: `http://127.0.0.1:18763`. The fixture in [benchmark.py](benchmark.py)
   serves one heading, one paragraph and a page-load callback. No remote assets.
-
-The measured Rake runtime predates RAKE-009, RAKE-010 and RAKE-011.
-Those add injection, navigation and devtools support. Their expected size impact
-is small, but these numbers do not measure the combined runtime.
-The separately observed devtools feature adds about 1.4 KB to the executable.
-Rerun this benchmark after integration before claiming final release numbers.
 
 ## Results
 
@@ -24,18 +18,18 @@ KiB means 1024 bytes. Bundle size is allocated disk usage from `du -sk`.
 
 | App | Bundle | Main executable | Distribution archive | Page-load median (range) | Idle RSS median (range) |
 |---|---:|---:|---:|---:|---:|
-| Rake | 820 KiB | 821216 bytes | 395300 bytes, template tar.gz | 401.818 ms (373.012 to 550.150 ms) | 183712 KiB (181744 to 196576 KiB) |
-| Pake | 11444 KiB | 11313200 bytes | 4222870 bytes, app tar.gz | 517.061 ms (447.848 to 1168.074 ms) | 214576 KiB (213776 to 219600 KiB) |
+| Rake | 856 KiB | 856192 bytes | 419182 bytes, template tar.gz | 366.681 ms (352.227 to 794.956 ms) | 193280 KiB (192416 to 193952 KiB) |
+| Pake | 11444 KiB | 11313200 bytes | 4222870 bytes, app tar.gz | 397.305 ms (371.334 to 418.572 ms) | 217872 KiB (213472 to 218432 KiB) |
 
 Raw observations, in execution order:
 
 ```text
 run  Rake load ms  Pake load ms  Rake RSS KiB  Pake RSS KiB
-1    401.818       678.393       181744        219600
-2    388.697       517.061       187712        213776
-3    373.012       474.921       183712        214576
-4    412.079       1168.074      196576        215008
-5    550.150       447.848       183360        213792
+1    794.956       418.572       193280        213472
+2    352.227       405.546       193600        218432
+3    381.892       371.334       192416        218112
+4    366.681       397.305       192480        217744
+5    356.346       395.768       193952        217872
 ```
 
 ## Method and limits
@@ -48,8 +42,8 @@ loading. It does not measure first visible paint or window appearance directly.
 The endpoint measures page readiness, not a remote website's latency.
 
 Cold means a fresh process. The OS file cache is warm. No `sudo purge` was used.
-Browser storage is not reset between runs. One Rake pilot was excluded before
-the five measured pairs. Other desktop apps and development jobs were running.
+Browser storage is not reset between runs. No pilot runs were excluded from
+this measurement. Other desktop apps and development jobs were running.
 This is a small local sample, not a controlled laboratory result.
 
 After the load callback, the script waits 30 seconds and runs:
@@ -93,7 +87,7 @@ of the benchmark apps first. The script launches real desktop windows.
 
 ```sh
 BENCH=$(mktemp -d "${TMPDIR%/}/rake-bench-013.XXXXXX")
-git worktree add --detach "$BENCH/source" 7dfbab4414c3eba2982b45cb9121c0581c194421
+git worktree add --detach "$BENCH/source" 5a18a157af682232614896ae033e645eb6208984
 (cd "$BENCH/source" && cargo xtask template)
 tar -xzf "$BENCH/source/target/template/rake-template-0.1.0-macos-arm64.tar.gz" -C "$BENCH"
 printf '%s' '{"url":"http://127.0.0.1:18763"}' > "$BENCH/Rake.app/Contents/Resources/config.json"
@@ -115,8 +109,9 @@ git worktree remove "$BENCH/source"
 ```
 
 Archive bytes can vary with timestamps, signatures and tar metadata.
-The original measurement extracted Rake inside the temporary worktree's
-`target/template` directory. That path difference does not change the payload.
+This measurement reused the existing Pake app and rebuilt Rake in the benchmark
+branch after rebasing onto the main commit above. Only these two docs files
+differed from that commit. Both apps were outside the build worktree.
 The reproduction leaves results and both apps in `$BENCH` for inspection.
 
 To calculate medians and ranges from the recorded JSON:
@@ -134,8 +129,8 @@ PY
 
 ## Conclusion
 
-Rake's bundle is 10624 KiB smaller. No bundle-size fix is needed for RAKE-013.
+Rake's bundle is 10588 KiB smaller. No bundle-size fix is needed for RAKE-013.
 Rake also has lower median startup time and idle RSS in this sample.
 Both use the system WebKit, so a much smaller executable does not imply the same
-reduction in runtime memory. Repeat with the integrated runtime and real sites
-before generalizing these results.
+reduction in runtime memory. Repeat with real sites before generalizing these
+results.
