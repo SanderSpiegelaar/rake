@@ -9,3 +9,4 @@ publish.workspace = true
 gpui.workspace = true
 gpui_platform.workspace = true
 rake-config = { path = "../rake-config" }
+rake-core = { path = "../rake-core" }

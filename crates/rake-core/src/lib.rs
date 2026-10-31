@@ -8,6 +8,9 @@ use std::{
 use rake_config::RakeConfig;
 use url::Url;
 
+mod config_file;
+pub use config_file::{load_config, save_config};
+
 pub const ICON_FILE: &str = "icon.icns";
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
