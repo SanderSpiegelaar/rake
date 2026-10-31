@@ -19,3 +19,9 @@ tao = { version = "=0.37.2", default-features = false, features = ["rwh_06"] }
 thiserror = "=2.0.21"
 url = "=2.5.8"
 wry = { version = "=0.57.1", default-features = false, features = ["os-webview"] }
+
+[profile.release]
+lto = true
+strip = true
+codegen-units = 1
+opt-level = "z"
