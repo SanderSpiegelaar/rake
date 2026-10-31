@@ -174,14 +174,23 @@ pub fn assemble(
     run(Command::new("/usr/bin/ditto").arg(template).arg(&bundle))
         .map_err(|error| Error::Assembly(error.to_string()))?;
     let contents = bundle.join("Contents");
-    fs::rename(
-        contents.join("MacOS/rake-runtime"),
-        contents.join("MacOS").join(&name),
-    )?;
-    run(Command::new("/usr/bin/plutil")
-        .args(["-replace", "CFBundleExecutable", "-string", &name])
-        .arg(contents.join("Info.plist")))
-    .map_err(|error| Error::Assembly(error.to_string()))?;
+    let identifier = config.identifier();
+    let version = env!("CARGO_PKG_VERSION");
+    let metadata = [
+        ("CFBundleName", name.as_str()),
+        ("CFBundleDisplayName", name.as_str()),
+        ("CFBundleIdentifier", identifier.as_str()),
+        ("CFBundleShortVersionString", version),
+        ("CFBundleVersion", version),
+        ("CFBundleExecutable", "rake-runtime"),
+        ("CFBundleIconFile", ICON_FILE),
+    ];
+    for (key, value) in metadata {
+        run(Command::new("/usr/bin/plutil")
+            .args(["-replace", key, "-string", value])
+            .arg(contents.join("Info.plist")))
+        .map_err(|error| Error::Assembly(error.to_string()))?;
+    }
     let resources = contents.join("Resources");
     fs::create_dir_all(resources.join("inject"))?;
     let mut written = config.clone();
@@ -780,6 +789,102 @@ mod tests {
         (temp, template, config)
     }
 
+    fn assert_bundle_metadata(bundle: &Path, name: &str, identifier: &str) {
+        let plist = bundle.join("Contents/Info.plist");
+        let lint = run(Command::new("/usr/bin/plutil").arg("-lint").arg(&plist)).unwrap();
+        assert!(lint.contains(": OK"), "{lint}");
+        for (key, expected) in [
+            ("CFBundleName", name),
+            ("CFBundleDisplayName", name),
+            ("CFBundleIdentifier", identifier),
+            ("CFBundleShortVersionString", env!("CARGO_PKG_VERSION")),
+            ("CFBundleVersion", env!("CARGO_PKG_VERSION")),
+            ("CFBundleExecutable", "rake-runtime"),
+            ("CFBundleIconFile", "icon.icns"),
+        ] {
+            let actual = run(Command::new("/usr/bin/plutil")
+                .args(["-extract", key, "raw", "-o", "-"])
+                .arg(&plist))
+            .unwrap();
+            assert_eq!(actual.trim_end_matches('\n'), expected, "{key}");
+        }
+        assert!(bundle.join("Contents/MacOS/rake-runtime").is_file());
+        assert!(bundle.join("Contents/Resources/icon.icns").is_file());
+    }
+
+    #[test]
+    fn patches_all_bundle_metadata_from_config_and_defaults() {
+        for (name, identifier, expected_name) in [
+            (
+                Some("My & <App> \"Test\""),
+                Some("org.example.Custom-App"),
+                "My & <App> \"Test\"",
+            ),
+            (None, None, "127.0.0.1"),
+        ] {
+            let (temp, template, mut config) = assembly_fixture();
+            config.name = name.map(String::from);
+            config.identifier = identifier.map(String::from);
+            let expected_identifier = config.identifier();
+            let output = temp.0.join("out");
+            let original = fs::read(template.join("Contents/Info.plist")).unwrap();
+            let result = assemble(&config, &template, &output, false, None).unwrap();
+            assert_bundle_metadata(&result.path, expected_name, &expected_identifier);
+            assert_eq!(
+                fs::read(template.join("Contents/Info.plist")).unwrap(),
+                original
+            );
+        }
+    }
+
+    #[test]
+    fn plist_failure_preserves_existing_app_and_removes_staging() {
+        let (temp, template, config) = assembly_fixture();
+        let output = temp.0.join("out");
+        let result = assemble(&config, &template, &output, false, None).unwrap();
+        let original = fs::read(result.path.join("Contents/Info.plist")).unwrap();
+        fs::write(template.join("Contents/Info.plist"), "invalid plist").unwrap();
+        let error = assemble(&config, &template, &output, true, None).unwrap_err();
+        assert!(matches!(error, Error::Assembly(_)));
+        assert!(error.to_string().contains("plutil"));
+        assert_eq!(
+            fs::read(result.path.join("Contents/Info.plist")).unwrap(),
+            original
+        );
+        assert_eq!(fs::read_dir(output).unwrap().count(), 1);
+    }
+
+    #[test]
+    #[ignore = "requires cargo xtask template and macOS plist tools"]
+    fn real_plist_app() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let template = env::var_os("RAKE_TEMPLATE")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| root.join("target/template/Rake.app"));
+        assert!(complete_bundle(&template), "Run cargo xtask template first");
+        let mut config = RakeConfig::new("https://example.com");
+        config.name = Some("Rake Plist Proof".into());
+        config.identifier = Some("org.example.rake-plist-proof".into());
+        let icon = Icon::Path(template.join("Contents/Resources").join(ICON_FILE));
+        let result = assemble(
+            &config,
+            &template,
+            &root.join("target/rake017-verification"),
+            true,
+            Some(&icon),
+        )
+        .unwrap();
+        assert_bundle_metadata(
+            &result.path,
+            "Rake Plist Proof",
+            "org.example.rake-plist-proof",
+        );
+        println!(
+            "Verified all seven plist keys and plutil -lint on {}",
+            result.path.display()
+        );
+    }
+
     #[test]
     fn assembles_layout_executable_config_and_inject_files() {
         use std::os::unix::fs::PermissionsExt;
@@ -798,20 +903,20 @@ mod tests {
         assert_eq!(result.warnings.len(), 1);
         let bundle = result.path;
         assert!(bundle.ends_with("out/My App.app"));
-        let executable = bundle.join("Contents/MacOS/My App");
+        let executable = bundle.join("Contents/MacOS/rake-runtime");
         assert_eq!(fs::read_to_string(&executable).unwrap(), "runtime");
         assert_eq!(
             fs::metadata(executable).unwrap().permissions().mode() & 0o777,
             0o755
         );
-        assert!(!bundle.join("Contents/MacOS/rake-runtime").exists());
+        assert!(!bundle.join("Contents/MacOS/My App").exists());
         assert_eq!(
             run(Command::new("/usr/bin/plutil")
                 .args(["-extract", "CFBundleExecutable", "raw", "-o", "-"])
                 .arg(bundle.join("Contents/Info.plist")))
             .unwrap()
             .trim(),
-            "My App"
+            "rake-runtime"
         );
         let resources = bundle.join("Contents/Resources");
         let written: RakeConfig =
