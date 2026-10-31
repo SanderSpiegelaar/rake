@@ -65,7 +65,7 @@ The core library exists from M0, so the CLI stays a thin wrapper from its first 
 
 1. macOS Intel and universal templates.
 2. Linux: WebKitGTK template for x86_64 and arm64, `.desktop` file, PNG icon, `.deb`, and tarball. The runtime uses wry's GTK container path for X11 and native Wayland. See [Linux verification](cli-usage.md#linux-verification) for observed behaviour.
-3. Windows: WebView2 template, exe icon swap, ZIP.
+3. Windows: x86_64 WebView2 template, native post-build exe icon resources, and ZIP output. See [Windows packaging](cli-usage.md#windows-packaging). Windows 11 runtime acceptance remains unverified.
 4. Then the P1 options: tray, multi-window, global shortcut, and the rest.
 
 ## Repo layout

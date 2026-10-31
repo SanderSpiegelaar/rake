@@ -1,6 +1,11 @@
 version: 2.1
 
 executors:
+  windows:
+    machine:
+      image: windows-server-2022-gui:current
+      shell: powershell.exe -ExecutionPolicy Bypass
+    resource_class: windows.medium
   linux:
     machine:
       image: ubuntu-2404:current
@@ -15,6 +20,21 @@ executors:
       CARGO_TERM_COLOR: always
 
 commands:
+  windows_setup:
+    steps:
+      - checkout
+      - run:
+          name: Install Rust
+          command: |
+            $ErrorActionPreference = 'Stop'
+            $env:Path = "$env:USERPROFILE\.cargo\bin;$env:Path"
+            if (!(Get-Command rustup -ErrorAction SilentlyContinue)) {
+              Invoke-WebRequest https://win.rustup.rs/x86_64 -OutFile rustup-init.exe
+              & .\rustup-init.exe -y --default-toolchain none
+              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            }
+            rustup show
+            exit $LASTEXITCODE
   linux_dependencies:
     steps:
       - run:
@@ -51,6 +71,27 @@ commands:
             - target
 
 jobs:
+  check-windows:
+    executor: windows
+    steps:
+      - windows_setup
+      - run:
+          name: Check and smoke test Windows apps
+          no_output_timeout: 20m
+          command: |
+            $ErrorActionPreference = 'Stop'
+            $env:Path = "$env:USERPROFILE\.cargo\bin;$env:Path"
+            cargo fmt --all --check
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            cargo clippy --workspace --all-targets -- -D warnings
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            cargo test --workspace --locked
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            python tests/windows_smoke.py
+            exit $LASTEXITCODE
+      - store_artifacts:
+          path: target/windows-smoke
+
   check-linux:
     executor: linux
     steps:
@@ -155,6 +196,29 @@ jobs:
             - rake-linux-<< parameters.arch >>
             - rake-template-*-linux-<< parameters.arch >>.tar.gz
 
+  release-windows:
+    executor: windows
+    steps:
+      - windows_setup
+      - run:
+          name: Build and stage Windows assets
+          no_output_timeout: 20m
+          command: |
+            $ErrorActionPreference = 'Stop'
+            $env:Path = "$env:USERPROFILE\.cargo\bin;$env:Path"
+            cargo xtask template x86_64
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            cargo build --release --locked --package rake-cli
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            New-Item -ItemType Directory -Force release-assets
+            Copy-Item target/release/rake.exe release-assets/rake-windows-x86_64.exe
+            Copy-Item "target/template/rake-template-$($env:CIRCLE_TAG.Substring(1))-windows-x86_64.tar.gz" release-assets/
+      - persist_to_workspace:
+          root: release-assets
+          paths:
+            - rake-windows-x86_64.exe
+            - rake-template-*-windows-x86_64.tar.gz
+
   publish:
     executor: macos
     steps:
@@ -164,7 +228,7 @@ jobs:
           name: Combine release checksums
           working_directory: release-assets
           command: |
-            shasum -a 256 rake rake-linux-* rake-template-*.tar.gz > SHA256SUMS
+            shasum -a 256 rake rake-linux-* rake-windows-*.exe rake-template-*.tar.gz > SHA256SUMS
             shasum -a 256 --check SHA256SUMS
       # GH_TOKEN comes from the github-release context and needs contents: write on the repo.
       - run:
@@ -180,6 +244,7 @@ workflows:
     jobs:
       - check
       - check-linux
+      - check-windows
       - smoke
 
   release:
@@ -208,12 +273,19 @@ workflows:
               only: /^v.*/
             branches:
               ignore: /.*/
+      - release-windows:
+          filters:
+            tags:
+              only: /^v.*/
+            branches:
+              ignore: /.*/
       - publish:
           context: github-release
           requires:
             - release-macos
             - release-linux-x86_64
             - release-linux-arm64
+            - release-windows
           filters:
             tags:
               only: /^v.*/
