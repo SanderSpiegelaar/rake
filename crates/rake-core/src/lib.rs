@@ -957,17 +957,17 @@ mod tests {
     fn real_install_app() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let app = root.join("target/rake019-verification/Rake Install Proof.app");
-        let destination = Path::new("/Applications/Rake Install Proof.app");
+        let applications = env::var_os("RAKE_APPLICATIONS")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("/Applications"));
+        let destination = applications.join("Rake Install Proof.app");
         assert!(
-            fs::symlink_metadata(destination)
+            fs::symlink_metadata(&destination)
                 .is_err_and(|error| error.kind() == io::ErrorKind::NotFound),
             "proof destination must not exist"
         );
-        assert_eq!(
-            install(&app, Path::new("/Applications")).unwrap(),
-            destination
-        );
-        verify_signature(destination).unwrap();
+        assert_eq!(install(&app, &applications).unwrap(), destination);
+        verify_signature(&destination).unwrap();
         println!(
             "Installed and verified {}. Launch, quit, and remove this proof app manually.",
             destination.display()
