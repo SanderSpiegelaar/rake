@@ -7,7 +7,7 @@ use std::{
 
 use clap::{Parser, ValueEnum};
 use rake_config::RakeConfig;
-use rake_core::{Error, Target, TemplateOptions, TemplateTarget};
+use rake_core::{BuildOptions, Error, Target, TemplateOptions, TemplateTarget};
 
 #[derive(Debug, Parser)]
 #[command(name = "rake", version = concat!(env!("CARGO_PKG_VERSION"), " (template ", env!("CARGO_PKG_VERSION"), ")"))]
@@ -122,25 +122,27 @@ fn run(args: &Args, warnings: &mut Vec<String>) -> Result<PathBuf, Error> {
     let config = args.merge()?;
     let output = std::env::current_dir()
         .map_err(|error| Error::Unexpected(format!("current directory: {error}")))?;
-    let template = rake_core::ensure_template(&TemplateOptions {
-        target: args.arch.map(TemplateTarget::from),
-        ..Default::default()
-    })
-    .map_err(|error| Error::MissingTemplate(error.to_string()))?;
-    let app = rake_core::assemble(&config, &template, &output, args.force)?;
-    *warnings = app.warnings;
+    let result = rake_core::build(
+        &config,
+        &BuildOptions {
+            template: TemplateOptions {
+                target: args.arch.map(TemplateTarget::from),
+                ..Default::default()
+            },
+            output_dir: output,
+            target: args.target.into(),
+            install: args.install,
+            force: args.force,
+        },
+        warnings,
+        |_| {},
+    );
     for warning in warnings.iter() {
         eprintln!("warning: {warning}");
     }
-    let result = match Target::from(args.target) {
-        Target::App => app.path.clone(),
-        Target::Dmg => rake_core::package_dmg(&app.path, &output, args.force)?,
-    };
-    if args.install {
-        rake_core::install(&app.path, Path::new("/Applications"))?;
-    }
-    eprintln!("{}", result.display());
-    Ok(app.path)
+    let result = result?;
+    eprintln!("{}", result.output_path.display());
+    Ok(result.app_path)
 }
 
 fn main() {

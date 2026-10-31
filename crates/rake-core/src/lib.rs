@@ -8,6 +8,8 @@ use std::{
 use rake_config::RakeConfig;
 use url::Url;
 
+mod build;
+pub use build::{BuildOptions, BuildResult, BuildStep, build};
 mod config_file;
 pub use config_file::{load_config, save_config};
 
@@ -155,6 +157,16 @@ pub fn assemble(
     output_dir: &Path,
     force: bool,
 ) -> Result<AssemblyResult, Error> {
+    assemble_with_progress(config, template, output_dir, force, &mut |_| {})
+}
+
+fn assemble_with_progress(
+    config: &RakeConfig,
+    template: &Path,
+    output_dir: &Path,
+    force: bool,
+    progress: &mut impl FnMut(BuildStep),
+) -> Result<AssemblyResult, Error> {
     config
         .validate()
         .map_err(|error| Error::InvalidInput(error.to_string()))?;
@@ -248,6 +260,7 @@ pub fn assemble(
         }
     });
     let warnings = install_icon(&config.url, icon.as_ref(), &resources)?;
+    progress(BuildStep::Signing);
     sign(&bundle)?;
     let old = staging.0.join("old.app");
     let exists = check_destination()?;
@@ -822,6 +835,77 @@ mod tests {
             .path;
         let applications = temp.0.join("Applications");
         (temp, app, applications)
+    }
+
+    #[test]
+    fn build_reports_real_steps_and_stops_on_error() {
+        let (temp, template, config) = assembly_fixture();
+        let cache = temp.0.join("cache");
+        let cached = cache
+            .join("templates")
+            .join(env!("CARGO_PKG_VERSION"))
+            .join(TemplateTarget::current().unwrap().as_str())
+            .join("Rake.app");
+        fs::create_dir_all(cached.parent().unwrap()).unwrap();
+        fs::rename(template, cached).unwrap();
+        let mut options = BuildOptions {
+            template: TemplateOptions {
+                cache_root: Some(cache),
+                base_url: "http://127.0.0.1:1".into(),
+                ..Default::default()
+            },
+            output_dir: temp.0.join("out"),
+            ..Default::default()
+        };
+        let mut steps = Vec::new();
+        let mut warnings = Vec::new();
+        let result = build(&config, &options, &mut warnings, |step| steps.push(step)).unwrap();
+        assert_eq!(
+            steps,
+            [
+                BuildStep::Template,
+                BuildStep::Assembling,
+                BuildStep::Signing,
+                BuildStep::Done
+            ]
+        );
+        assert_eq!(result.app_path, result.output_path);
+        verify_signature(&result.app_path).unwrap();
+        assert_eq!(warnings.len(), 1);
+
+        steps.clear();
+        assert!(build(&config, &options, &mut warnings, |step| steps.push(step)).is_err());
+        assert_eq!(steps, [BuildStep::Template, BuildStep::Assembling]);
+        assert!(warnings.is_empty());
+
+        options.target = Target::Dmg;
+        options.output_dir = temp.0.join("dmg");
+        fs::create_dir(&options.output_dir).unwrap();
+        fs::write(options.output_dir.join("My App.dmg"), "existing").unwrap();
+        steps.clear();
+        assert!(build(&config, &options, &mut warnings, |step| steps.push(step)).is_err());
+        assert_eq!(
+            steps,
+            [
+                BuildStep::Template,
+                BuildStep::Assembling,
+                BuildStep::Signing,
+                BuildStep::Packaging
+            ]
+        );
+        assert_eq!(warnings.len(), 1);
+
+        steps.clear();
+        assert!(
+            build(
+                &RakeConfig::new("invalid"),
+                &options,
+                &mut warnings,
+                |step| steps.push(step)
+            )
+            .is_err()
+        );
+        assert!(steps.is_empty());
     }
 
     #[test]

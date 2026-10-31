@@ -3,6 +3,7 @@ use gpui::{
     TitlebarOptions, Window, WindowBounds, WindowOptions, actions, div, prelude::*, px, rgb, size,
 };
 
+mod build;
 mod config_file;
 mod config_io;
 mod form;
@@ -18,6 +19,7 @@ struct Builder {
     draft: ConfigDraft,
     inputs: Vec<Entity<TextInput>>,
     toggles: [FocusHandle; 4],
+    build: build::BuildControls,
     icon_picker: icon_picker::IconPicker,
     config_file_focus: [FocusHandle; 2],
     config_file_error: Option<String>,
@@ -52,6 +54,7 @@ impl Builder {
             draft,
             inputs,
             toggles: std::array::from_fn(|_| cx.focus_handle().tab_stop(true)),
+            build: build::BuildControls::new(cx),
             icon_picker: icon_picker::IconPicker::new(cx),
             config_file_focus: std::array::from_fn(|_| cx.focus_handle().tab_stop(true)),
             config_file_error: None,
@@ -155,14 +158,24 @@ impl Render for Builder {
         div()
             .id("builder")
             .size_full()
-            .overflow_y_scroll()
+            .flex()
+            .flex_col()
+            .gap_3()
             .on_action(|_: &NextField, window, cx| window.focus_next(cx))
             .on_action(|_: &PreviousField, window, cx| window.focus_prev(cx))
             .p_6()
             .bg(rgb(0xf5f5f5))
             .text_color(rgb(0x202020))
             .text_size(px(14.))
-            .child(form)
+            .child(
+                div()
+                    .id("form")
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .child(form),
+            )
+            .child(self.build_controls(window, cx))
     }
 }
 
@@ -177,11 +190,14 @@ fn main() {
             KeyBinding::new("space", Toggle, Some("Toggle")),
             KeyBinding::new("enter", Toggle, Some("Toggle")),
             KeyBinding::new("cmd-q", Quit, None),
+            KeyBinding::new("enter", build::Build, Some("Build")),
+            KeyBinding::new("space", build::Build, Some("Build")),
         ]);
         cx.on_action(|_: &Quit, cx| cx.quit());
         let bounds = Bounds::centered(None, size(px(720.0), px(760.0)), cx);
         cx.open_window(
             WindowOptions {
+                focus: false,
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 titlebar: Some(TitlebarOptions {
                     title: Some("Rake".into()),
@@ -205,6 +221,5 @@ fn main() {
             }
         })
         .detach();
-        cx.activate(true);
     });
 }
