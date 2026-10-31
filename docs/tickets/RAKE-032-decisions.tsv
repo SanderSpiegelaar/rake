@@ -1,0 +1,6 @@
+ts	phase	decision	why	evidence	result
+2026-10-31T23:40:00Z	model	Extend Platform and TemplateTarget with Windows x86_64 and Target with Zip	Keep Windows in the existing host dispatch instead of spreading OS branches through the build pipeline	crates/rake-core/src/lib.rs	implemented
+2026-10-31T23:44:00Z	icons	Use Win32 resource transactions through the locked windows-sys dependency	Avoid a downloaded rcedit executable and preserve the prebuilt template	crates/rake-core/src/windows.rs	cross-compiled
+2026-10-31T23:45:00Z	packaging	Retain tar.gz templates and use PowerShell .NET ZIP creation for user output	Reuse verified fetching and avoid adding archive crates	xtask/src/main.rs; crates/rake-core/src/windows.rs	CircleCI config validated
+2026-10-31T23:47:00Z	verification	Keep Windows 11 acceptance unchecked even if CI passes	CircleCI provides Windows Server 2022 rather than Windows 11	.circleci/config.yml; docs/tickets/RAKE-032.md	Windows 11 run remains open
+2026-10-31T23:48:41Z	icons	Decode icon entries with CreateIconFromResourceEx before resource updates	A PNG header alone cannot prove the custom icon can render	https://github.com/SanderSpiegelaar/rake/pull/35#discussion_r4433730491	regression test added; Windows execution pending

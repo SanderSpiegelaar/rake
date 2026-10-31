@@ -95,4 +95,19 @@ mod tests {
         assert!(ico(&png).is_err());
         assert!(ico(b"not an icon").is_err());
     }
+
+    #[test]
+    fn windows_targets_reject_unsupported_packages_and_install() {
+        use crate::{Platform, Target};
+        for target in [Target::App, Target::Zip] {
+            assert!(Platform::Windows.validate(target, false).is_ok());
+            assert!(Platform::Windows.validate(target, true).is_err());
+        }
+        for target in [Target::Dmg, Target::Deb, Target::Tarball] {
+            assert!(Platform::Windows.validate(target, false).is_err());
+        }
+        for platform in [Platform::Macos, Platform::Linux] {
+            assert!(platform.validate(Target::Zip, false).is_err());
+        }
+    }
 }

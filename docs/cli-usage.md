@@ -73,6 +73,8 @@ Rake calls Win32 `BeginUpdateResourceW`, `UpdateResourceW`, and `EndUpdateResour
 
 ICO input preserves its image entries. PNG input gets a single-image ICO header without recompression. PNG dimensions must be from 1 to 256 pixels per side. SVG, JPEG, and other formats need conversion before use on Windows. Automatic discovery tries site icons, then adds the bundled default PNG as a resource with a warning. The prebuilt template has no icon resource until assembly. Generated executables are unsigned.
 
+`CreateIconFromResourceEx` decodes every image before Rake writes resources. A recognizable PNG header without decodable pixels does not count as a usable icon.
+
 `rcedit` was rejected because it adds a downloaded executable, version management, and another trust boundary on the user's machine. Resource-editing crates were rejected because the required Win32 APIs are already available in the lockfile. Build-time resource generators alone cannot replace the icon in a prebuilt template on the user's machine.
 
 ### Windows verification

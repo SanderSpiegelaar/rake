@@ -100,7 +100,8 @@ def main():
 
         (directory / "index.html").write_text(
             "<!doctype html><title>Rake Windows proof</title><h1>Rake on Windows</h1>"
-            '<script>requestAnimationFrame(()=>requestAnimationFrame(()=>fetch("/rendered")))</script>'
+            "<script>requestAnimationFrame(()=>requestAnimationFrame(()=>{"
+            'if(window.rakeInjected)fetch("/rendered")}))</script>'
         )
         server = ThreadingHTTPServer(
             ("127.0.0.1", 0), functools.partial(Handler, directory=str(directory))

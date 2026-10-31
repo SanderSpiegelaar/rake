@@ -316,8 +316,9 @@ mod tests {
 
     #[test]
     fn file_paths_are_relative_to_config_but_flag_paths_are_not() {
+        let absolute_script = std::env::temp_dir().join("abs.js");
         with_config(
-            r#"{"url":"https://example.com","icon":"icon.png","inject":["style.css","/abs.js"]}"#,
+            &serde_json::json!({"url":"https://example.com","icon":"icon.png","inject":["style.css",absolute_script]}).to_string(),
             |path| {
                 let config = Args::try_parse_from(["rake", "--config", path.to_str().unwrap()])
                     .unwrap()
@@ -330,7 +331,7 @@ mod tests {
                 );
                 assert_eq!(
                     config.inject,
-                    [directory.join("style.css"), PathBuf::from("/abs.js")]
+                    [directory.join("style.css"), absolute_script.clone()]
                 );
                 let config = Args::try_parse_from([
                     "rake",

@@ -133,6 +133,7 @@ fn icon(
             };
         if let Ok(bytes) = fs::read(source)
             && let Ok(icon) = super::windows_icon::ico(&bytes)
+            && validate_icon(&icon).is_ok()
         {
             return Ok((icon, Vec::new()));
         }
@@ -149,6 +150,7 @@ fn icon(
 }
 
 fn replace_icon(executable: &Path, ico: &[u8]) -> Result<(), Error> {
+    validate_icon(ico)?;
     let (group, images) = super::windows_icon::resources(ico)?;
     let path: Vec<u16> = executable
         .as_os_str()
@@ -197,6 +199,26 @@ fn replace_icon(executable: &Path, ico: &[u8]) -> Result<(), Error> {
     Ok(())
 }
 
+fn validate_icon(ico: &[u8]) -> Result<(), Error> {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{CreateIconFromResourceEx, DestroyIcon};
+    let (_, images) = super::windows_icon::resources(ico)?;
+    for image in images {
+        // SAFETY: The decoder reads only this live buffer. Its returned icon is destroyed once.
+        let icon = unsafe {
+            CreateIconFromResourceEx(image.as_ptr(), image.len() as u32, 1, 0x00030000, 0, 0, 0)
+        };
+        if icon.is_null() {
+            return Err(Error::InvalidInput(
+                "icon: Windows could not decode the image".into(),
+            ));
+        }
+        unsafe {
+            DestroyIcon(icon);
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn package(
     config: &RakeConfig,
     app: &Path,
@@ -229,4 +251,90 @@ pub(crate) fn package(
         return Err(error.into());
     }
     Ok(destination)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejects_png_headers_without_decodable_image_data() {
+        let png = include_bytes!("../../../assets/icon.png");
+        let valid = super::super::windows_icon::ico(png).unwrap();
+        assert!(validate_icon(&valid).is_ok());
+        let truncated = super::super::windows_icon::ico(&png[..33]).unwrap();
+        assert!(validate_icon(&truncated).is_err());
+        let mut corrupt = png.to_vec();
+        corrupt[33..].fill(0);
+        let corrupt = super::super::windows_icon::ico(&corrupt).unwrap();
+        assert!(validate_icon(&corrupt).is_err());
+    }
+
+    #[test]
+    fn assembly_preserves_template_and_previous_output_on_failure() {
+        let temp = Staging::new(&env::temp_dir()).unwrap();
+        let template = temp.0.join("Rake");
+        fs::create_dir(&template).unwrap();
+        fs::copy(
+            env::current_exe().unwrap(),
+            template.join("rake-runtime.exe"),
+        )
+        .unwrap();
+        fs::write(
+            template.join("icon.png"),
+            include_bytes!("../../../assets/icon.png"),
+        )
+        .unwrap();
+        let original = fs::read(template.join("rake-runtime.exe")).unwrap();
+        let mut config = RakeConfig::new("http://127.0.0.1:1");
+        config.name = Some("Alice's App".into());
+        config.icon = Some(template.join("icon.png").to_string_lossy().into_owned());
+        let output = temp.0.join("output");
+        let result = assemble(&config, &template, &output, false).unwrap();
+        assert!(result.warnings.is_empty());
+        assert!(result.path.join("Alice's App.exe").is_file());
+        assert_eq!(
+            fs::read(template.join("rake-runtime.exe")).unwrap(),
+            original
+        );
+        assert!(!template.join("config.json").exists());
+        assert_eq!(
+            assemble(&config, &template, &output, false)
+                .unwrap_err()
+                .exit_code(),
+            2
+        );
+        let previous = fs::read(result.path.join("Alice's App.exe")).unwrap();
+        config.icon = Some(temp.0.join("missing.png").to_string_lossy().into_owned());
+        assert!(assemble(&config, &template, &output, true).is_err());
+        assert_eq!(
+            fs::read(result.path.join("Alice's App.exe")).unwrap(),
+            previous
+        );
+        config.icon = Some(template.join("icon.png").to_string_lossy().into_owned());
+        for name in [
+            "",
+            ".",
+            "..",
+            "CON.txt",
+            "NUL",
+            "COM1",
+            "LPT9.log",
+            "bad?name",
+            "trailing.",
+            "trailing ",
+        ] {
+            config.name = Some(name.into());
+            assert_eq!(
+                assemble(&config, &template, &output, true)
+                    .unwrap_err()
+                    .exit_code(),
+                2,
+                "{name}"
+            );
+        }
+        config.name = Some("Rake".into());
+        assert!(assemble(&config, &template, &temp.0, true).is_err());
+        assert!(assemble(&config, &template, &template, true).is_err());
+    }
 }
