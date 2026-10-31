@@ -39,6 +39,8 @@ Boolean value flags accept `true` or `false`. A bare `--dark-mode`, `--debug`, o
 
 Repeated `--inject` or `--safe-domain` flags replace the corresponding config list rather than append to it. CLI file paths resolve from the current directory. Local icon and injection paths in a config file resolve from that file's directory.
 
+The builder's **Import** loads this config format. **Export** saves local icon and injection paths as absolute paths, so saving the config in another directory does not change which files the CLI uses. Installation remains a CLI or builder action, not a config field.
+
 Output files go into the current directory as `<Name>.app` and, for `--target dmg`, `<Name>.dmg`. There is no output-directory flag. The app is ad-hoc signed after assembly. It is not Developer ID signed or notarized.
 
 The template cache is `$HOME/Library/Caches/rake/templates/<version>/macos-<arch>/Rake.app`. On a cache miss, Rake downloads `rake-template-<version>-macos-<arch>.tar.gz` and `SHA256SUMS` from the matching `v<version>` GitHub Release, checks the archive's SHA-256, and extracts it. There is no CLI cache-refresh flag.

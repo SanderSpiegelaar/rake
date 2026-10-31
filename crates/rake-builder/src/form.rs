@@ -71,7 +71,9 @@ impl Field {
     }
 }
 
+#[derive(Clone, Debug)]
 pub struct ConfigDraft {
+    pub schema_version: u32,
     pub text: [String; Field::ALL.len()],
     pub hide_title_bar: bool,
     pub dark_mode: bool,
@@ -81,8 +83,14 @@ pub struct ConfigDraft {
 
 impl Default for ConfigDraft {
     fn default() -> Self {
-        let config = RakeConfig::new("");
+        Self::from(RakeConfig::new(""))
+    }
+}
+
+impl From<RakeConfig> for ConfigDraft {
+    fn from(config: RakeConfig) -> Self {
         Self {
+            schema_version: config.schema_version,
             text: [
                 config.url,
                 config.name.unwrap_or_default(),
@@ -141,6 +149,7 @@ impl ConfigDraft {
             }
         };
         let mut config = RakeConfig::new(text(Field::Url));
+        config.schema_version = self.schema_version;
         config.name = optional(Field::Name);
         config.identifier = optional(Field::Identifier);
         config.icon = optional(Field::Icon);
@@ -194,6 +203,7 @@ mod tests {
     #[test]
     fn every_app_option_is_parsed() {
         let draft = ConfigDraft {
+            schema_version: rake_config::SCHEMA_VERSION,
             text: [
                 "https://example.com",
                 "Example",

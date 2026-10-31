@@ -9,4 +9,4 @@ Load a config JSON into the form and save the form as a config JSON usable by th
 
 ## Acceptance criteria
 
-- [ ] An exported config builds the same app via `rake --config`.
+- [x] An exported config builds the same app via `rake --config`.

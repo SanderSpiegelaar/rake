@@ -3,6 +3,8 @@ use gpui::{
     TitlebarOptions, Window, WindowBounds, WindowOptions, actions, div, prelude::*, px, rgb, size,
 };
 
+mod config_file;
+mod config_io;
 mod form;
 mod icon_picker;
 mod input;
@@ -17,6 +19,8 @@ struct Builder {
     inputs: Vec<Entity<TextInput>>,
     toggles: [FocusHandle; 4],
     icon_picker: icon_picker::IconPicker,
+    config_file_focus: [FocusHandle; 2],
+    config_file_error: Option<String>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -49,6 +53,8 @@ impl Builder {
             inputs,
             toggles: std::array::from_fn(|_| cx.focus_handle().tab_stop(true)),
             icon_picker: icon_picker::IconPicker::new(cx),
+            config_file_focus: std::array::from_fn(|_| cx.focus_handle().tab_stop(true)),
+            config_file_error: None,
             _subscriptions: subscriptions,
         }
     }
@@ -72,7 +78,11 @@ impl Builder {
 impl Render for Builder {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let error = self.draft.config().err();
-        let mut form = div().flex().flex_col().gap_3();
+        let mut form = div()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .child(self.config_file_controls(window, cx));
         for pair in [
             [Field::Url, Field::Name],
             [Field::Identifier, Field::Icon],
@@ -160,6 +170,7 @@ fn main() {
     gpui_platform::application().run(|cx: &mut App| {
         input::bind_keys(cx);
         icon_picker::bind_keys(cx);
+        config_file::bind_keys(cx);
         cx.bind_keys([
             KeyBinding::new("tab", NextField, None),
             KeyBinding::new("shift-tab", PreviousField, None),

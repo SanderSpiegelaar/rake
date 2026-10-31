@@ -148,6 +148,21 @@ impl Builder {
         cx.notify();
     }
 
+    pub fn icon_imported(&mut self, cx: &mut Context<Self>) {
+        self.icon_picker.state.cancel();
+        self.icon_picker.state.preview = None;
+        self.icon_picker.state.status = Status::Idle;
+        let source = self.draft.text[Field::Icon as usize].clone();
+        if !source.is_empty() {
+            let icon = if source.starts_with("http://") || source.starts_with("https://") {
+                Icon::Url(source)
+            } else {
+                Icon::Path(source.into())
+            };
+            self.load_icon(Some(icon), cx);
+        }
+    }
+
     fn choose_icon(&mut self, cx: &mut Context<Self>) {
         let paths = cx.prompt_for_paths(PathPromptOptions {
             files: true,
