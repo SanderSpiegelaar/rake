@@ -10,46 +10,69 @@ fn main() -> Result<(), Box<dyn Error>> {
             fs::write(directory.join("rake.schema.json"), schema_json())?;
             Ok(())
         }
-        Some("template") => template(),
+        Some("template") => template(std::env::args().nth(2).as_deref()),
         _ => {
-            eprintln!("Usage: cargo xtask <schema|template>");
+            eprintln!("Usage: cargo xtask schema | template [arm64|x86_64|universal]");
             std::process::exit(2);
         }
     }
 }
 
-fn template() -> Result<(), Box<dyn Error>> {
-    if !cfg!(all(target_os = "macos", target_arch = "aarch64")) {
-        return Err("template requires an Apple Silicon Mac".into());
+fn template(arch: Option<&str>) -> Result<(), Box<dyn Error>> {
+    if !cfg!(target_os = "macos") {
+        return Err("template requires macOS".into());
     }
+    let arch = arch.unwrap_or(if cfg!(target_arch = "aarch64") {
+        "arm64"
+    } else {
+        "x86_64"
+    });
+    let targets: &[&str] = match arch {
+        "arm64" => &["aarch64-apple-darwin"],
+        "x86_64" => &["x86_64-apple-darwin"],
+        "universal" => &["aarch64-apple-darwin", "x86_64-apple-darwin"],
+        _ => return Err(format!("unsupported architecture: {arch}").into()),
+    };
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
     let output = root.join("target/template");
     let bundle = output.join("Rake.app");
     let contents = bundle.join("Contents");
     let archive = format!(
-        "rake-template-{}-macos-arm64.tar.gz",
+        "rake-template-{}-macos-{arch}.tar.gz",
         env!("CARGO_PKG_VERSION")
     );
-    run(Command::new("cargo").current_dir(root).args([
-        "build",
-        "--release",
-        "--locked",
-        "--package",
-        "rake-runtime",
-        "--target",
-        "aarch64-apple-darwin",
-        "--target-dir",
-        "target",
-    ]))?;
+    for target in targets {
+        run(Command::new("cargo").current_dir(root).args([
+            "build",
+            "--release",
+            "--locked",
+            "--package",
+            "rake-runtime",
+            "--target",
+            target,
+            "--target-dir",
+            "target",
+        ]))?;
+    }
     if bundle.exists() {
         fs::remove_dir_all(&bundle)?;
     }
     fs::create_dir_all(contents.join("MacOS"))?;
     fs::create_dir_all(contents.join("Resources"))?;
-    fs::copy(
-        root.join("target/aarch64-apple-darwin/release/rake-runtime"),
-        contents.join("MacOS/rake-runtime"),
-    )?;
+    let executable = contents.join("MacOS/rake-runtime");
+    let binaries: Vec<_> = targets
+        .iter()
+        .map(|target| root.join(format!("target/{target}/release/rake-runtime")))
+        .collect();
+    if arch == "universal" {
+        run(Command::new("lipo")
+            .arg("-create")
+            .args(&binaries)
+            .arg("-output")
+            .arg(&executable))?;
+    } else {
+        fs::copy(&binaries[0], &executable)?;
+    }
     fs::write(contents.join("Info.plist"), template_plist())?;
     // A legacy monochrome ICNS entry keeps the replaceable placeholder dependency-free.
     let mut icon = b"icns\0\0\x01\x10ICN#\0\0\x01\x08".to_vec();
@@ -63,9 +86,19 @@ fn template() -> Result<(), Box<dyn Error>> {
         .current_dir(&output)
         .env("COPYFILE_DISABLE", "1")
         .args(["-czf", &archive, "Rake.app"]))?;
+    let prefix = format!("rake-template-{}-macos-", env!("CARGO_PKG_VERSION"));
+    let mut archives = fs::read_dir(&output)?
+        .map(|entry| entry.map(|entry| entry.file_name()))
+        .collect::<Result<Vec<_>, _>>()?;
+    archives.retain(|name| {
+        name.to_str()
+            .is_some_and(|name| name.starts_with(&prefix) && name.ends_with(".tar.gz"))
+    });
+    archives.sort();
     let checksum = Command::new("shasum")
         .current_dir(&output)
-        .args(["-a", "256", &archive])
+        .args(["-a", "256"])
+        .args(archives)
         .output()?;
     if !checksum.status.success() {
         return Err("shasum failed".into());

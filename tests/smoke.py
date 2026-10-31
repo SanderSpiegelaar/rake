@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import json
 import os
+import platform
 from pathlib import Path
 import shutil
 import subprocess
@@ -74,7 +75,10 @@ def main():
         directory = Path(directory)
         home = directory / "home"
         cache = (
-            home / "Library/Caches/rake/templates" / version / "macos-arm64/Rake.app"
+            home
+            / "Library/Caches/rake/templates"
+            / version
+            / f"macos-{'arm64' if platform.machine() == 'arm64' else 'x86_64'}/Rake.app"
         )
         shutil.copytree(template, cache)
         environment = os.environ.copy()

@@ -8,7 +8,7 @@ use std::{
 
 use clap::{Parser, ValueEnum};
 use rake_config::RakeConfig;
-use rake_core::{Error, Target, TemplateOptions};
+use rake_core::{Error, Target, TemplateOptions, TemplateTarget};
 
 #[derive(Debug, Parser)]
 #[command(name = "rake", version = concat!(env!("CARGO_PKG_VERSION"), " (template ", env!("CARGO_PKG_VERSION"), ")"))]
@@ -47,6 +47,8 @@ struct Args {
     safe_domains: Option<Vec<String>>,
     #[arg(long, value_enum, default_value = "app")]
     target: OutputTarget,
+    #[arg(long, value_enum)]
+    arch: Option<Architecture>,
     #[arg(long)]
     install: bool,
     #[arg(long)]
@@ -59,6 +61,24 @@ struct Args {
 enum OutputTarget {
     App,
     Dmg,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum Architecture {
+    Arm64,
+    #[value(name = "x86_64")]
+    X86_64,
+    Universal,
+}
+
+impl From<Architecture> for TemplateTarget {
+    fn from(arch: Architecture) -> Self {
+        match arch {
+            Architecture::Arm64 => Self::MacosArm64,
+            Architecture::X86_64 => Self::MacosX86_64,
+            Architecture::Universal => Self::MacosUniversal,
+        }
+    }
 }
 
 impl From<OutputTarget> for Target {
@@ -120,8 +140,11 @@ fn run(args: &Args, warnings: &mut Vec<String>) -> Result<PathBuf, Error> {
     let config = args.merge()?;
     let output = std::env::current_dir()
         .map_err(|error| Error::Unexpected(format!("current directory: {error}")))?;
-    let template = rake_core::ensure_template(&TemplateOptions::default())
-        .map_err(|error| Error::MissingTemplate(error.to_string()))?;
+    let template = rake_core::ensure_template(&TemplateOptions {
+        target: args.arch.map(TemplateTarget::from),
+        ..Default::default()
+    })
+    .map_err(|error| Error::MissingTemplate(error.to_string()))?;
     let app = rake_core::assemble(&config, &template, &output, args.force)?;
     *warnings = app.warnings;
     for warning in warnings.iter() {
@@ -357,6 +380,50 @@ mod tests {
                 Err(Error::InvalidInput(_))
             ));
         });
+    }
+
+    #[test]
+    fn architecture_is_independent_of_output_format() {
+        let defaults = Args::try_parse_from(["rake", "https://example.com"]).unwrap();
+        assert!(defaults.arch.is_none());
+        for (arch, expected) in [
+            ("arm64", TemplateTarget::MacosArm64),
+            ("x86_64", TemplateTarget::MacosX86_64),
+            ("universal", TemplateTarget::MacosUniversal),
+        ] {
+            for target in ["app", "dmg"] {
+                let args = Args::try_parse_from([
+                    "rake",
+                    "https://example.com",
+                    "--arch",
+                    arch,
+                    "--target",
+                    target,
+                ])
+                .unwrap();
+                assert_eq!(args.arch.map(TemplateTarget::from), Some(expected));
+                assert!(matches!(
+                    (args.target, target),
+                    (OutputTarget::App, "app") | (OutputTarget::Dmg, "dmg")
+                ));
+            }
+        }
+        assert!(
+            Args::try_parse_from(["rake", "https://example.com", "--arch", "invalid"]).is_err()
+        );
+    }
+
+    #[test]
+    fn every_help_flag_is_documented() {
+        use clap::CommandFactory;
+        let docs = include_str!("../../../docs/cli-usage.md");
+        let mut command = Args::command();
+        command.build();
+        for argument in command.get_arguments() {
+            if let Some(long) = argument.get_long() {
+                assert!(docs.contains(&format!("--{long}")), "missing --{long}");
+            }
+        }
     }
 
     #[test]
