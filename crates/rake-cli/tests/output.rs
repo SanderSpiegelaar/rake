@@ -1,4 +1,4 @@
-#![cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#![cfg(target_os = "macos")]
 
 use std::{
     fs,
@@ -30,8 +30,9 @@ impl Fixture {
         let home = root.join("home");
         let output = root.join("output");
         let template = home.join(format!(
-            "Library/Caches/rake/templates/{}/macos-arm64/Rake.app",
-            env!("CARGO_PKG_VERSION")
+            "Library/Caches/rake/templates/{}/{}/Rake.app",
+            env!("CARGO_PKG_VERSION"),
+            rake_core::TemplateTarget::current().unwrap().as_str()
         ));
         fs::create_dir_all(template.join("Contents/MacOS")).unwrap();
         fs::create_dir_all(template.join("Contents/Resources")).unwrap();
@@ -100,6 +101,40 @@ fn assert_result(output: Output, code: i32) -> Value {
         assert!(!stderr.is_empty());
     }
     result
+}
+
+#[test]
+fn architecture_selects_its_own_cached_template() {
+    let fixture = Fixture::new();
+    let version = fixture.template.parent().unwrap().parent().unwrap();
+    for arch in ["arm64", "x86_64", "universal"] {
+        let template = version.join(format!("macos-{arch}/Rake.app"));
+        if template != fixture.template {
+            assert!(
+                Command::new("/usr/bin/ditto")
+                    .arg(&fixture.template)
+                    .arg(&template)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        }
+        fs::write(template.join("Contents/MacOS/rake-runtime"), arch).unwrap();
+    }
+    for arch in ["arm64", "x86_64", "universal"] {
+        assert_result(
+            fixture
+                .build()
+                .args(["--arch", arch, "--force"])
+                .output()
+                .unwrap(),
+            0,
+        );
+        assert_eq!(
+            fs::read_to_string(fixture.output.join("Example.app/Contents/MacOS/Example")).unwrap(),
+            arch
+        );
+    }
 }
 
 #[test]

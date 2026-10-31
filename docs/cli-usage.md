@@ -4,7 +4,7 @@
 rake [OPTIONS] [URL]
 ```
 
-Rake builds macOS arm64 apps. `URL` must be an HTTP or HTTPS URL with a host. It is required unless `--config` supplies it. A positional URL overrides the config file's `url`.
+Rake builds macOS apps for arm64, x86_64, or both. `URL` must be an HTTP or HTTPS URL with a host. It is required unless `--config` supplies it. A positional URL overrides the config file's `url`.
 
 ## Flags and defaults
 
@@ -28,6 +28,7 @@ Defaults below apply without a config file. Explicit flags override file values.
 | `--inject <FILE>` | Empty list | Repeat for each `.css` or `.js` file. Copy files into the app and inject them on every page load, in list order. Basenames must be unique. |
 | `--safe-domain <DOMAIN>` | Empty extra list | Repeat for each extra bare hostname allowed in-app. The starting URL's host is always allowed. Allowed hosts include their subdomains. Other HTTP and HTTPS hosts open in the default browser. |
 | `--target <TARGET>` | `app` | Accept `app` or `dmg`. Both build the `.app`; `dmg` also creates a compressed disk image with an Applications link. |
+| `--arch <ARCH>` | Host architecture | Use the `arm64`, `x86_64`, or `universal` template. `universal` builds an app with both executable slices. Independent of `--target`. |
 | `--install` | `false` | Copy the built app into `/Applications`. Requires write access there. Replaces only a Rake-built app with the same bundle ID. |
 | `--force` | `false` | Replace an existing output `.app` or `.dmg`. Does not bypass installation safety checks. |
 | `--json` | `false` | Write one JSON result to stdout. Diagnostics and the output path remain on stderr. |
@@ -40,7 +41,7 @@ Repeated `--inject` or `--safe-domain` flags replace the corresponding config li
 
 Output files go into the current directory as `<Name>.app` and, for `--target dmg`, `<Name>.dmg`. There is no output-directory flag. The app is ad-hoc signed after assembly. It is not Developer ID signed or notarized.
 
-The template cache is `$HOME/Library/Caches/rake/templates/<version>/macos-arm64/Rake.app`. On a cache miss, Rake downloads `rake-template-<version>-macos-arm64.tar.gz` and `SHA256SUMS` from the matching `v<version>` GitHub Release, checks the archive's SHA-256, and extracts it. There is no CLI cache-refresh flag.
+The template cache is `$HOME/Library/Caches/rake/templates/<version>/macos-<arch>/Rake.app`. On a cache miss, Rake downloads `rake-template-<version>-macos-<arch>.tar.gz` and `SHA256SUMS` from the matching `v<version>` GitHub Release, checks the archive's SHA-256, and extracts it. There is no CLI cache-refresh flag.
 
 ## JSON output
 

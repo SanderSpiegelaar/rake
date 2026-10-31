@@ -6,11 +6,11 @@ Turn a website into a macOS app using the system webview. Rake copies a prebuilt
 
 ## Install
 
-Rake currently supports Apple Silicon Macs only. The CLI needs network access for its first template download and for site icons.
+Rake runs on Apple Silicon and Intel Macs. The CLI needs network access for its first template download and for site icons.
 
 No release is published yet. These steps apply once a release includes both the CLI and its matching template.
 
-1. Open [GitHub Releases](https://github.com/SanderSpiegelaar/rake/releases). Download the macOS arm64 CLI binary and save it as `~/Downloads/rake`. If the asset is an archive, extract the `rake` binary first.
+1. Open [GitHub Releases](https://github.com/SanderSpiegelaar/rake/releases). Download the `rake` CLI binary, a universal binary for both architectures, and save it as `~/Downloads/rake`. If the asset is an archive, extract the `rake` binary first.
 2. Install the binary into your user account:
 
    ```sh

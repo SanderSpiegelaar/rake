@@ -1,20 +1,26 @@
 # Template bundle
 
-On an Apple Silicon Mac with Rust and Xcode command line tools installed:
+On a Mac with Rust and Xcode command line tools installed:
 
 ```sh
-cargo xtask template
+cargo xtask template universal
 cd target/template
 shasum -a 256 -c SHA256SUMS
-tar -xzf rake-template-0.1.0-macos-arm64.tar.gz
+tar -xzf rake-template-0.1.0-macos-universal.tar.gz
 printf '{"url":"https://example.com"}\n' > Rake.app/Contents/Resources/config.json
 open Rake.app
 ```
 
+The task defaults to the host architecture. Pass `arm64`, `x86_64`, or `universal`
+to select an architecture, such as `cargo xtask template universal`.
+Universal builds combine both Rust target executables with `lipo` before signing.
+Both Rust targets are installed by `rust-toolchain.toml`.
+
 The task builds only `rake-runtime` with the workspace release profile. It writes
-`target/template/rake-template-<version>-macos-arm64.tar.gz` and `SHA256SUMS`.
+`target/template/rake-template-<version>-macos-<arch>.tar.gz` and `SHA256SUMS`.
 The version is inherited from `[workspace.package]`. `SHA256SUMS` contains one
-sha256sum-compatible line: `<64 lowercase hex characters>  <archive filename>`.
+sha256sum-compatible line per template archive of that version in the output directory:
+`<64 lowercase hex characters>  <archive filename>`.
 The filename is relative to `SHA256SUMS`, with two spaces after the digest.
 
 The archive contains a single `Rake.app`, with executable
@@ -27,7 +33,9 @@ changing its contents for distribution. No Developer ID signing or notarization
 is provided.
 
 Repeated builds replace the staged bundle, including any test config added to it.
-The task uses `cargo`, `codesign`, `tar`, and `shasum`, with no added dependencies.
+The task uses `cargo`, `codesign`, `tar`, `shasum`, and `lipo`, with no added dependencies.
+The release workflow publishes all three template archives and a universal `rake`
+CLI binary, with one `SHA256SUMS` covering all four assets.
 
 ## Release size choice
 
