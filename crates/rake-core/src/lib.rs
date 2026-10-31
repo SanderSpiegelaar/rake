@@ -6,6 +6,21 @@ use std::{
 };
 
 use rake_config::RakeConfig;
+use url::Url;
+
+pub const ICON_FILE: &str = "icon.icns";
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum Icon {
+    Path(PathBuf),
+    Url(String),
+}
+
+#[derive(Debug)]
+pub struct AssemblyResult {
+    pub path: PathBuf,
+    pub warnings: Vec<String>,
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TemplateTarget {
@@ -112,7 +127,8 @@ pub fn assemble(
     template: &Path,
     output_dir: &Path,
     force: bool,
-) -> Result<PathBuf, Error> {
+    icon: Option<&Icon>,
+) -> Result<AssemblyResult, Error> {
     config
         .validate()
         .map_err(|error| Error::InvalidInput(error.to_string()))?;
@@ -187,6 +203,7 @@ pub fn assemble(
     let json = serde_json::to_vec_pretty(&written)
         .map_err(|error| Error::InvalidInput(error.to_string()))?;
     fs::write(resources.join("config.json"), json)?;
+    let warnings = install_icon(&config.url, icon, &resources, &staging.0)?;
     let old = staging.0.join("old.app");
     let exists = check_destination()?;
     if exists {
@@ -198,7 +215,208 @@ pub fn assemble(
         }
         return Err(error.into());
     }
-    Ok(destination)
+    Ok(AssemblyResult {
+        path: destination,
+        warnings,
+    })
+}
+
+fn install_icon(
+    page: &str,
+    icon: Option<&Icon>,
+    resources: &Path,
+    staging: &Path,
+) -> Result<Vec<String>, Error> {
+    let downloaded = staging.join("downloaded-icon");
+    let converted = staging.join(ICON_FILE);
+    if let Some(icon) = icon {
+        let source = match icon {
+            Icon::Path(path) => fs::canonicalize(path)?,
+            Icon::Url(url) => {
+                fetch_icon(url, &downloaded)?;
+                downloaded
+            }
+        };
+        convert_icon(&source, &converted, staging)?;
+        fs::copy(converted, resources.join(ICON_FILE))?;
+        return Ok(Vec::new());
+    }
+
+    let html_path = staging.join("page.html");
+    let (base, html) = match fetch_icon(page, &html_path) {
+        Ok(base) => (base, fs::read_to_string(html_path).unwrap_or_default()),
+        Err(_) => (page.to_owned(), String::new()),
+    };
+    for candidate in icon_candidates(&base, &html) {
+        if fetch_icon(&candidate, &downloaded).is_ok()
+            && convert_icon(&downloaded, &converted, staging).is_ok()
+        {
+            fs::copy(&converted, resources.join(ICON_FILE))?;
+            return Ok(Vec::new());
+        }
+    }
+    Ok(vec![format!(
+        "No usable icon found for {page}; keeping the template's default icon"
+    )])
+}
+
+fn fetch_icon(source: &str, destination: &Path) -> Result<String, Error> {
+    let url = Url::parse(source)
+        .ok()
+        .filter(|url| matches!(url.scheme(), "http" | "https"))
+        .ok_or_else(|| Error::InvalidInput("icon: expected an HTTP or HTTPS URL".into()))?;
+    run(Command::new("curl")
+        .args([
+            "--fail",
+            "--location",
+            "--silent",
+            "--show-error",
+            "--proto",
+            "=http,https",
+            "--proto-redir",
+            "=http,https",
+            "--connect-timeout",
+            "3",
+            "--max-time",
+            "5",
+            "--max-filesize",
+            "5242880",
+            "--write-out",
+            "%{url_effective}",
+            "--output",
+        ])
+        .arg(destination)
+        .arg(url.as_str()))
+}
+
+fn convert_icon(source: &Path, destination: &Path, staging: &Path) -> Result<(), Error> {
+    let iconset = staging.join("app.iconset");
+    fs::create_dir_all(&iconset)?;
+    let png = staging.join("source.png");
+    run(Command::new("sips")
+        .args(["-s", "format", "png"])
+        .arg(source)
+        .arg("--out")
+        .arg(&png))?;
+    for size in [16, 32, 128, 256, 512] {
+        for scale in [1, 2] {
+            let pixels = (size * scale).to_string();
+            let suffix = if scale == 2 { "@2x" } else { "" };
+            run(Command::new("sips")
+                .args(["-z", &pixels, &pixels])
+                .arg(&png)
+                .arg("--out")
+                .arg(iconset.join(format!("icon_{size}x{size}{suffix}.png"))))?;
+        }
+    }
+    run(Command::new("iconutil")
+        .args(["-c", "icns"])
+        .arg(&iconset)
+        .arg("-o")
+        .arg(destination))?;
+    Ok(())
+}
+
+fn icon_candidates(page: &str, html: &str) -> Vec<String> {
+    let Ok(base) = Url::parse(page) else {
+        return Vec::new();
+    };
+    let mut touch = Vec::new();
+    let mut icons = Vec::new();
+    let mut rest = html;
+    while let Some(start) = rest.find('<') {
+        rest = &rest[start + 1..];
+        if rest.starts_with("!--") {
+            rest = rest.split_once("-->").map_or("", |(_, tail)| tail);
+            continue;
+        }
+        let mut quote = None;
+        let Some(end) = rest.find(|c| {
+            if matches!(c, '\'' | '"') {
+                if quote == Some(c) {
+                    quote = None;
+                } else if quote.is_none() {
+                    quote = Some(c);
+                }
+            }
+            c == '>' && quote.is_none()
+        }) else {
+            break;
+        };
+        let tag = &rest[..end];
+        rest = &rest[end + 1..];
+        let name_end = tag.find(char::is_whitespace).unwrap_or(tag.len());
+        if !tag[..name_end].eq_ignore_ascii_case("link") {
+            continue;
+        }
+        let attributes = link_attributes(&tag[name_end..]);
+        let Some(href) = attributes.iter().find(|(key, _)| key == "href") else {
+            continue;
+        };
+        let Some((_, rel)) = attributes.iter().find(|(key, _)| key == "rel") else {
+            continue;
+        };
+        let Ok(url) = base.join(&href.1.replace("&amp;", "&")) else {
+            continue;
+        };
+        if !matches!(url.scheme(), "http" | "https") {
+            continue;
+        }
+        if rel
+            .split_ascii_whitespace()
+            .any(|rel| rel.eq_ignore_ascii_case("apple-touch-icon"))
+        {
+            touch.push(url.to_string());
+        } else if rel
+            .split_ascii_whitespace()
+            .any(|rel| rel.eq_ignore_ascii_case("icon"))
+        {
+            icons.push(url.to_string());
+        }
+    }
+    touch.extend(icons);
+    if let Ok(favicon) = base.join("/favicon.ico") {
+        touch.push(favicon.to_string());
+    }
+    let mut candidates = Vec::new();
+    for candidate in touch {
+        if !candidates.contains(&candidate) {
+            candidates.push(candidate);
+        }
+    }
+    candidates
+}
+
+fn link_attributes(mut text: &str) -> Vec<(String, String)> {
+    let mut attributes = Vec::new();
+    while !text.is_empty() {
+        text = text.trim_start();
+        let end = text
+            .find(|c: char| c.is_whitespace() || matches!(c, '=' | '/'))
+            .unwrap_or(text.len());
+        if end == 0 {
+            break;
+        }
+        let key = text[..end].to_ascii_lowercase();
+        text = text[end..].trim_start();
+        if !text.starts_with('=') {
+            continue;
+        }
+        text = text[1..].trim_start();
+        let value;
+        if let Some(quote) = text.chars().next().filter(|c| matches!(c, '\'' | '"')) {
+            text = &text[1..];
+            let end = text.find(quote).unwrap_or(text.len());
+            value = text[..end].to_owned();
+            text = text.get(end + 1..).unwrap_or("");
+        } else {
+            let end = text.find(char::is_whitespace).unwrap_or(text.len());
+            value = text[..end].to_owned();
+            text = &text[end..];
+        }
+        attributes.push((key, value));
+    }
+    attributes
 }
 
 /// Fetch and verify the version-matched template, or reuse the complete cached bundle.
@@ -333,6 +551,8 @@ fn run(command: &mut Command) -> Result<String, Error> {
         Some("shasum") => "shasum",
         Some("/usr/bin/ditto") => "ditto",
         Some("/usr/bin/plutil") => "plutil",
+        Some("sips") => "sips",
+        Some("iconutil") => "iconutil",
         _ => "tar",
     };
     let output = command.output().map_err(|error| Error::Command {
@@ -386,6 +606,167 @@ mod tests {
         time::Duration,
     };
 
+    #[test]
+    fn discovers_icons_in_priority_order_and_resolves_relative_urls() {
+        let html = r#"
+            <!-- <link rel="apple-touch-icon" href="ignored.png"> -->
+            <link href='../small.ico?a=1&amp;b=2' rel='shortcut ICON'>
+            <LINK HREF = "//cdn.example.com/touch.png" REL = "APPLE-TOUCH-ICON">
+            <link rel=icon href=/root.png>
+            <link rel="icon" href="/root.png">
+            <link rel="icon" href="data:image/png,abc">
+            <link rel="stylesheet" href="style.css">
+            <link rel="icon">
+            <link rel="apple-touch-icon" href="touch>large.png">
+        "#;
+        assert_eq!(
+            icon_candidates("https://example.com/path/page", html),
+            [
+                "https://cdn.example.com/touch.png",
+                "https://example.com/path/touch%3Elarge.png",
+                "https://example.com/small.ico?a=1&b=2",
+                "https://example.com/root.png",
+                "https://example.com/favicon.ico",
+            ]
+        );
+        assert_eq!(
+            icon_candidates("https://example.com/path/page", "no icons"),
+            ["https://example.com/favicon.ico"]
+        );
+        assert!(icon_candidates("not a URL", "").is_empty());
+    }
+
+    #[test]
+    fn unusable_site_icons_preserve_default_and_return_warning() {
+        let (temp, template, mut config) = assembly_fixture();
+        let site = temp.0.join("site");
+        fs::create_dir(&site).unwrap();
+        fs::write(
+            site.join("index.html"),
+            r#"<link rel="apple-touch-icon" href="/bad.png">"#,
+        )
+        .unwrap();
+        fs::write(site.join("bad.png"), "not an image").unwrap();
+        let server = Server::start(site);
+        config.url = format!("{}/index.html", server.url);
+        let result = assemble(&config, &template, &temp.0.join("out"), false, None).unwrap();
+        assert_eq!(result.warnings.len(), 1);
+        assert!(result.warnings[0].contains("keeping the template's default icon"));
+        assert_eq!(
+            fs::read(result.path.join("Contents/Resources").join(ICON_FILE)).unwrap(),
+            b"icon"
+        );
+    }
+
+    #[test]
+    fn explicit_icon_failures_do_not_publish_an_app() {
+        let (temp, template, config) = assembly_fixture();
+        let bad = temp.0.join("bad.png");
+        fs::write(&bad, "not an image").unwrap();
+        let output = temp.0.join("out");
+        for icon in [
+            Icon::Path(temp.0.join("missing.png")),
+            Icon::Path(bad),
+            Icon::Url("http://127.0.0.1:1/missing.png".into()),
+            Icon::Url("file:///etc/passwd".into()),
+        ] {
+            assert!(assemble(&config, &template, &output, false, Some(&icon)).is_err());
+            assert_eq!(fs::read_dir(&output).unwrap().count(), 0);
+        }
+    }
+
+    #[test]
+    #[ignore = "requires cargo xtask template and macOS icon tools"]
+    fn real_icon_apps() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let template = env::var_os("RAKE_TEMPLATE")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| root.join("target/template/Rake.app"));
+        assert!(complete_bundle(&template), "Run cargo xtask template first");
+        let output = root.join("target/rake016-verification");
+        fs::create_dir_all(&output).unwrap();
+        let temp = Staging::new(&output).unwrap();
+        let png = temp.0.join("touch.png");
+        run(Command::new("sips")
+            .args(["-s", "format", "png", "-z", "256", "256"])
+            .arg(template.join("Contents/Resources").join(ICON_FILE))
+            .arg("--out")
+            .arg(&png))
+        .unwrap();
+        let png_bytes = fs::read(&png).unwrap();
+        let mut ico = vec![0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 1, 0, 32, 0];
+        ico.extend((png_bytes.len() as u32).to_le_bytes());
+        ico.extend(22_u32.to_le_bytes());
+        ico.extend(&png_bytes);
+
+        for case in ["touch", "favicon", "none", "broken", "path", "url"] {
+            let site = temp.0.join(case);
+            fs::create_dir(&site).unwrap();
+            let html = if matches!(case, "touch" | "broken") {
+                r#"<link rel="icon" href="/favicon.ico"><link rel="apple-touch-icon" href="/touch.png">"#
+            } else {
+                "<html><title>Icon proof</title></html>"
+            };
+            fs::write(site.join("index.html"), html).unwrap();
+            if case == "touch" {
+                fs::copy(&png, site.join("touch.png")).unwrap();
+                fs::write(site.join("favicon.ico"), "must prefer touch icon").unwrap();
+            }
+            if case == "broken" {
+                fs::write(site.join("touch.png"), "broken PNG").unwrap();
+            }
+            if matches!(case, "favicon" | "broken") {
+                fs::write(site.join("favicon.ico"), &ico).unwrap();
+            }
+            fs::copy(&png, site.join("explicit.png")).unwrap();
+            let server = Server::start(site);
+            let mut config = RakeConfig::new(format!("{}/index.html", server.url));
+            config.name = Some(format!("Icon-{case}"));
+            let icon = match case {
+                "path" => Some(Icon::Path(png.clone())),
+                "url" => Some(Icon::Url(format!("{}/explicit.png", server.url))),
+                _ => None,
+            };
+            let result = assemble(&config, &template, &output, true, icon.as_ref()).unwrap();
+            let icns = result.path.join("Contents/Resources").join(ICON_FILE);
+            if case == "none" {
+                assert_eq!(result.warnings.len(), 1);
+                assert_eq!(
+                    fs::read(icns).unwrap(),
+                    fs::read(template.join("Contents/Resources").join(ICON_FILE)).unwrap()
+                );
+                println!(
+                    "{case}: built app, default icon unchanged, warning = {}",
+                    result.warnings[0]
+                );
+                continue;
+            }
+            assert!(result.warnings.is_empty(), "{:?}", result.warnings);
+            let decoded = temp.0.join(format!("{case}.iconset"));
+            run(Command::new("iconutil")
+                .args(["-c", "iconset"])
+                .arg(&icns)
+                .arg("-o")
+                .arg(&decoded))
+            .unwrap();
+            for size in [16, 32, 128, 256, 512] {
+                for scale in [1, 2] {
+                    let suffix = if scale == 2 { "@2x" } else { "" };
+                    let image = decoded.join(format!("icon_{size}x{size}{suffix}.png"));
+                    let properties = run(Command::new("sips")
+                        .args(["-g", "pixelWidth", "-g", "pixelHeight"])
+                        .arg(image))
+                    .unwrap();
+                    let pixels = size * scale;
+                    assert!(properties.contains(&format!("pixelWidth: {pixels}")));
+                    assert!(properties.contains(&format!("pixelHeight: {pixels}")));
+                }
+            }
+            println!("{case}: built app, decoded ICNS, verified all 10 standard representations");
+        }
+        println!("Apps retained at {}", output.display());
+    }
+
     fn assembly_fixture() -> (Staging, PathBuf, RakeConfig) {
         let temp = Staging::new(&env::temp_dir()).unwrap();
         let template = temp.0.join("Rake.app");
@@ -394,7 +775,7 @@ mod tests {
         fs::write(template.join("Contents/MacOS/rake-runtime"), "runtime").unwrap();
         fs::write(template.join("Contents/Resources/icon.icns"), "icon").unwrap();
         fs::write(template.join("Contents/Info.plist"), r#"<?xml version="1.0"?><plist version="1.0"><dict><key>CFBundleExecutable</key><string>rake-runtime</string></dict></plist>"#).unwrap();
-        let mut config = RakeConfig::new("https://example.com/page");
+        let mut config = RakeConfig::new("http://127.0.0.1:1/page");
         config.name = Some("My App".into());
         (temp, template, config)
     }
@@ -413,7 +794,9 @@ mod tests {
             fs::write(&file, body).unwrap();
             config.inject.push(file);
         }
-        let bundle = assemble(&config, &template, &temp.0.join("out"), false).unwrap();
+        let result = assemble(&config, &template, &temp.0.join("out"), false, None).unwrap();
+        assert_eq!(result.warnings.len(), 1);
+        let bundle = result.path;
         assert!(bundle.ends_with("out/My App.app"));
         let executable = bundle.join("Contents/MacOS/My App");
         assert_eq!(fs::read_to_string(&executable).unwrap(), "runtime");
@@ -451,16 +834,18 @@ mod tests {
     fn refuses_overwrite_and_force_replaces_only_after_success() {
         let (temp, template, mut config) = assembly_fixture();
         let output = temp.0.join("out");
-        let bundle = assemble(&config, &template, &output, false).unwrap();
+        let bundle = assemble(&config, &template, &output, false, None)
+            .unwrap()
+            .path;
         let marker = bundle.join("marker");
         fs::write(&marker, "keep me").unwrap();
-        let error = assemble(&config, &template, &output, false).unwrap_err();
+        let error = assemble(&config, &template, &output, false, None).unwrap_err();
         assert_eq!(error.exit_code(), 2);
         assert!(error.to_string().contains("--force"));
         assert_eq!(fs::read_to_string(&marker).unwrap(), "keep me");
         config.inject = vec![temp.0.join("missing.js")];
         assert_eq!(
-            assemble(&config, &template, &output, true)
+            assemble(&config, &template, &output, true, None)
                 .unwrap_err()
                 .exit_code(),
             3
@@ -468,7 +853,12 @@ mod tests {
         assert_eq!(fs::read_to_string(&marker).unwrap(), "keep me");
         assert_eq!(fs::read_dir(&output).unwrap().count(), 1);
         config.inject.clear();
-        assert_eq!(assemble(&config, &template, &output, true).unwrap(), bundle);
+        assert_eq!(
+            assemble(&config, &template, &output, true, None)
+                .unwrap()
+                .path,
+            bundle
+        );
         assert!(!marker.exists());
         assert_eq!(fs::read_dir(output).unwrap().count(), 1);
     }
@@ -483,7 +873,7 @@ mod tests {
             fs::write(&file, directory).unwrap();
             config.inject.push(file);
         }
-        let error = assemble(&config, &template, &output, false).unwrap_err();
+        let error = assemble(&config, &template, &output, false, None).unwrap_err();
         assert!(error.to_string().contains("duplicate file name: same.js"));
         assert_eq!(error.exit_code(), 2);
         assert_eq!(fs::read_dir(&output).unwrap().count(), 0);
@@ -501,7 +891,7 @@ mod tests {
         ] {
             config.name = Some(name.into());
             assert_eq!(
-                assemble(&config, &template, &output, false)
+                assemble(&config, &template, &output, false, None)
                     .unwrap_err()
                     .exit_code(),
                 2,
@@ -516,7 +906,7 @@ mod tests {
         config.name = Some("Rake".into());
         for output in [&temp.0, &template] {
             assert_eq!(
-                assemble(&config, &template, output, true)
+                assemble(&config, &template, output, true, None)
                     .unwrap_err()
                     .exit_code(),
                 2
@@ -555,8 +945,12 @@ mod tests {
                             count.fetch_add(1, Ordering::Relaxed);
                             let request = String::from_utf8_lossy(&request[..length]);
                             let path = request.split_whitespace().nth(1).unwrap();
-                            let body = fs::read(root.join(path.trim_start_matches('/'))).unwrap();
-                            write!(stream, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).unwrap();
+                            let (status, body) =
+                                match fs::read(root.join(path.trim_start_matches('/'))) {
+                                    Ok(body) => ("200 OK", body),
+                                    Err(_) => ("404 Not Found", Vec::new()),
+                                };
+                            write!(stream, "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).unwrap();
                             stream.write_all(&body).unwrap();
                         }
                         Err(error) if error.kind() == io::ErrorKind::WouldBlock => {

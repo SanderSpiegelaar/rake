@@ -1559,6 +1559,7 @@ version = "0.1.0"
 dependencies = [
  "rake-config",
  "serde_json",
+ "url",
 ]
 
 [[package]]

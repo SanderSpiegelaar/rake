@@ -8,3 +8,4 @@ publish.workspace = true
 [dependencies]
 rake-config = { path = "../rake-config" }
 serde_json.workspace = true
+url.workspace = true
