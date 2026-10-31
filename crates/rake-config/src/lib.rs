@@ -83,6 +83,13 @@ impl RakeConfig {
             ("width", self.width, self.min_width),
             ("height", self.height, self.min_height),
         ] {
+            if value == 0 {
+                return Err(ConfigError::BelowMinimum {
+                    field,
+                    value,
+                    minimum: 1,
+                });
+            }
             if let Some(minimum) = minimum
                 && value < minimum
             {

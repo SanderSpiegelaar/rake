@@ -9,6 +9,7 @@ license = "MIT"
 publish = false
 
 [workspace.dependencies]
+clap = { version = "=4.6.7", features = ["derive"] }
 objc2 = "=0.6.5"
 objc2-app-kit = { version = "=0.3.2", default-features = false, features = ["std", "NSAlert", "NSApplication"] }
 objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "NSString"] }
