@@ -32,6 +32,8 @@ pub struct AssemblyResult {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TemplateTarget {
     MacosArm64,
+    MacosX86_64,
+    MacosUniversal,
 }
 
 impl TemplateTarget {
@@ -42,6 +44,7 @@ impl TemplateTarget {
     fn resolve(os: &str, arch: &str) -> Result<Self, Error> {
         match (os, arch) {
             ("macos", "aarch64") => Ok(Self::MacosArm64),
+            ("macos", "x86_64") => Ok(Self::MacosX86_64),
             _ => Err(Error::UnsupportedTarget(format!("{os}-{arch}"))),
         }
     }
@@ -49,12 +52,15 @@ impl TemplateTarget {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::MacosArm64 => "macos-arm64",
+            Self::MacosX86_64 => "macos-x86_64",
+            Self::MacosUniversal => "macos-universal",
         }
     }
 }
 
 #[derive(Debug)]
 pub struct TemplateOptions {
+    pub target: Option<TemplateTarget>,
     pub refresh: bool,
     /// Rake's cache root, before templates/<version>/<target>.
     pub cache_root: Option<PathBuf>,
@@ -65,6 +71,7 @@ pub struct TemplateOptions {
 impl Default for TemplateOptions {
     fn default() -> Self {
         Self {
+            target: None,
             refresh: false,
             cache_root: None,
             base_url: "https://github.com/SanderSpiegelaar/rake/releases/download".into(),
@@ -600,7 +607,10 @@ fn link_attributes(mut text: &str) -> Vec<(String, String)> {
 
 /// Fetch and verify the version-matched template, or reuse the complete cached bundle.
 pub fn ensure_template(options: &TemplateOptions) -> Result<PathBuf, Error> {
-    let target = TemplateTarget::current()?;
+    let target = match options.target {
+        Some(target) => target,
+        None => TemplateTarget::current()?,
+    };
     let root = match &options.cache_root {
         Some(root) => root.clone(),
         None => cache_root()?,
@@ -1550,58 +1560,83 @@ mod tests {
         let release = temp.0.join(format!("v{}", env!("CARGO_PKG_VERSION")));
         let contents = release.join("Rake.app/Contents");
         fs::create_dir_all(contents.join("MacOS")).unwrap();
-        fs::write(contents.join("MacOS/rake-runtime"), "fake runtime").unwrap();
         fs::write(contents.join("Info.plist"), "fake plist").unwrap();
-        let asset = format!(
-            "rake-template-{}-macos-arm64.tar.gz",
-            env!("CARGO_PKG_VERSION")
-        );
-        run(Command::new("tar")
-            .current_dir(&release)
-            .env("COPYFILE_DISABLE", "1")
-            .args(["-czf", &asset, "Rake.app"]))
-        .unwrap();
-        let sums = run(Command::new("shasum")
-            .current_dir(&release)
-            .args(["-a", "256", &asset]))
-        .unwrap();
+        let mut sums = String::new();
+        for target in [
+            TemplateTarget::MacosArm64,
+            TemplateTarget::MacosX86_64,
+            TemplateTarget::MacosUniversal,
+        ] {
+            fs::write(contents.join("MacOS/rake-runtime"), target.as_str()).unwrap();
+            let asset = format!(
+                "rake-template-{}-{}.tar.gz",
+                env!("CARGO_PKG_VERSION"),
+                target.as_str()
+            );
+            run(Command::new("tar")
+                .current_dir(&release)
+                .env("COPYFILE_DISABLE", "1")
+                .args(["-czf", &asset, "Rake.app"]))
+            .unwrap();
+            sums.push_str(
+                &run(Command::new("shasum")
+                    .current_dir(&release)
+                    .args(["-a", "256", &asset]))
+                .unwrap(),
+            );
+        }
         fs::write(release.join("SHA256SUMS"), sums).unwrap();
+        let asset = format!(
+            "rake-template-{}-{}.tar.gz",
+            env!("CARGO_PKG_VERSION"),
+            TemplateTarget::current().unwrap().as_str()
+        );
         (temp, release, asset)
     }
 
     #[test]
     fn downloads_extracts_reuses_offline_and_refreshes() {
-        let (temp, _, _) = fixture();
-        let server = Server::start(temp.0.clone());
-        let mut options = TemplateOptions {
-            cache_root: Some(temp.0.join("cache")),
-            base_url: server.url.clone(),
-            ..Default::default()
-        };
-        let bundle = ensure_template(&options).unwrap();
-        assert!(bundle.ends_with(format!(
-            "templates/{}/macos-arm64/Rake.app",
-            env!("CARGO_PKG_VERSION")
-        )));
-        assert_eq!(
-            fs::read_to_string(bundle.join("Contents/MacOS/rake-runtime")).unwrap(),
-            "fake runtime"
-        );
-        assert_eq!(server.requests.load(Ordering::Relaxed), 2);
-        assert_eq!(ensure_template(&options).unwrap(), bundle);
-        assert_eq!(server.requests.load(Ordering::Relaxed), 2);
-        fs::write(bundle.join("Contents/Info.plist"), "changed").unwrap();
-        options.refresh = true;
-        assert_eq!(ensure_template(&options).unwrap(), bundle);
-        assert_eq!(server.requests.load(Ordering::Relaxed), 4);
-        assert_eq!(
-            fs::read_to_string(bundle.join("Contents/Info.plist")).unwrap(),
-            "fake plist"
-        );
-        drop(server);
-        options.refresh = false;
-        assert_eq!(ensure_template(&options).unwrap(), bundle);
-        assert_eq!(fs::read_dir(bundle.parent().unwrap()).unwrap().count(), 1);
+        for target in [
+            None,
+            Some(TemplateTarget::MacosArm64),
+            Some(TemplateTarget::MacosX86_64),
+            Some(TemplateTarget::MacosUniversal),
+        ] {
+            let (temp, _, _) = fixture();
+            let server = Server::start(temp.0.clone());
+            let mut options = TemplateOptions {
+                target,
+                cache_root: Some(temp.0.join("cache")),
+                base_url: server.url.clone(),
+                ..Default::default()
+            };
+            let target = target.unwrap_or(TemplateTarget::current().unwrap());
+            let bundle = ensure_template(&options).unwrap();
+            assert!(bundle.ends_with(format!(
+                "templates/{}/{}/Rake.app",
+                env!("CARGO_PKG_VERSION"),
+                target.as_str()
+            )));
+            assert_eq!(
+                fs::read_to_string(bundle.join("Contents/MacOS/rake-runtime")).unwrap(),
+                target.as_str()
+            );
+            assert_eq!(server.requests.load(Ordering::Relaxed), 2);
+            assert_eq!(ensure_template(&options).unwrap(), bundle);
+            assert_eq!(server.requests.load(Ordering::Relaxed), 2);
+            fs::write(bundle.join("Contents/Info.plist"), "changed").unwrap();
+            options.refresh = true;
+            assert_eq!(ensure_template(&options).unwrap(), bundle);
+            assert_eq!(server.requests.load(Ordering::Relaxed), 4);
+            assert_eq!(
+                fs::read_to_string(bundle.join("Contents/Info.plist")).unwrap(),
+                "fake plist"
+            );
+            drop(server);
+            options.refresh = false;
+            assert_eq!(ensure_template(&options).unwrap(), bundle);
+            assert_eq!(fs::read_dir(bundle.parent().unwrap()).unwrap().count(), 1);
+        }
     }
 
     #[test]
@@ -1625,7 +1660,7 @@ mod tests {
             .0
             .join("cache/templates")
             .join(env!("CARGO_PKG_VERSION"))
-            .join("macos-arm64");
+            .join(TemplateTarget::current().unwrap().as_str());
         assert_eq!(fs::read_dir(target).unwrap().count(), 0);
         assert_eq!(server.requests.load(Ordering::Relaxed), 2);
     }
@@ -1659,7 +1694,7 @@ mod tests {
             .0
             .join("cache/templates")
             .join(env!("CARGO_PKG_VERSION"))
-            .join("macos-arm64");
+            .join(TemplateTarget::current().unwrap().as_str());
         fs::create_dir_all(target.join("Rake.app/Contents")).unwrap();
         fs::write(target.join("Rake.app/Contents/Info.plist"), "partial").unwrap();
         fs::create_dir(target.join(".fetch-interrupted")).unwrap();
@@ -1682,8 +1717,12 @@ mod tests {
                 .as_str(),
             "macos-arm64"
         );
+        assert_eq!(
+            TemplateTarget::resolve("macos", "x86_64").unwrap().as_str(),
+            "macos-x86_64"
+        );
         for (os, arch) in [
-            ("macos", "x86_64"),
+            ("macos", "arm"),
             ("linux", "aarch64"),
             ("windows", "x86_64"),
         ] {

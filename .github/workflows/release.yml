@@ -36,12 +36,18 @@ jobs:
               if tag != f'v{package["version"]}':
                   raise SystemExit(f'{tag} does not match {package["name"]} {package["version"]}')
           PY
-      - run: cargo xtask template
+      - run: cargo xtask template arm64
+      - run: cargo xtask template x86_64
+      - run: cargo xtask template universal
       - run: cargo build --release --locked --package rake-cli --target aarch64-apple-darwin --target-dir target
+      - run: cargo build --release --locked --package rake-cli --target x86_64-apple-darwin --target-dir target
       - name: Prepare CLI and checksums
         working-directory: target/template
         run: |
-          cp ../aarch64-apple-darwin/release/rake rake
+          lipo -create ../aarch64-apple-darwin/release/rake ../x86_64-apple-darwin/release/rake -output rake
+          codesign --force --sign - rake
+          lipo rake -verify_arch arm64
+          lipo rake -verify_arch x86_64
           shasum -a 256 rake >> SHA256SUMS
           shasum -a 256 --check SHA256SUMS
       - name: Publish release
@@ -52,5 +58,7 @@ jobs:
         run: |
           gh release create "$RELEASE_TAG" --verify-tag --title "$RELEASE_TAG" --generate-notes \
             "target/template/rake-template-${RELEASE_TAG#v}-macos-arm64.tar.gz" \
+            "target/template/rake-template-${RELEASE_TAG#v}-macos-x86_64.tar.gz" \
+            "target/template/rake-template-${RELEASE_TAG#v}-macos-universal.tar.gz" \
             target/template/SHA256SUMS \
             target/template/rake
