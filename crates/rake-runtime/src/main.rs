@@ -4,10 +4,14 @@ use rake_config::RakeConfig;
 use tao::{
     dpi::LogicalSize,
     event::{Event, WindowEvent},
-    event_loop::{ControlFlow, EventLoop},
+    event_loop::{ControlFlow, EventLoopBuilder},
     window::{Theme, WindowBuilder},
 };
-use wry::WebViewBuilder;
+use wry::{NewWindowResponse, WebViewBuilder};
+
+mod navigation;
+
+use navigation::NavigationPolicy;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (config, scripts) = env::current_exe()
@@ -19,7 +23,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             show_error(&error);
             std::process::exit(1);
         });
-    let event_loop = EventLoop::new();
+    let event_loop = EventLoopBuilder::<String>::with_user_event().build();
+    let navigation = Rc::new(NavigationPolicy::new(&config));
     let mut window = WindowBuilder::new()
         .with_title(config.title.clone().unwrap_or_else(|| config.app_name()))
         .with_inner_size(LogicalSize::new(config.width, config.height))
@@ -44,6 +49,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for script in scripts {
         webview = webview.with_initialization_script(script);
     }
+    let popup_navigation = Rc::clone(&navigation);
+    let proxy = event_loop.create_proxy();
+    webview = webview
+        .with_navigation_handler(move |url| navigation.navigate(&url))
+        .with_new_window_req_handler(move |url, _| {
+            if popup_navigation.navigate(&url) {
+                let _ = proxy.send_event(url);
+            }
+            NewWindowResponse::Deny
+        });
     if let Some(user_agent) = &config.user_agent {
         webview = webview.with_user_agent(user_agent);
     }
@@ -73,10 +88,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 _ => {}
             });
     }
-    let _webview = webview.build(window.as_ref())?;
+    let webview = webview.build(window.as_ref())?;
 
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Wait;
+        if let Event::UserEvent(url) = &event
+            && let Err(error) = webview.load_url(url)
+        {
+            eprintln!("Cannot navigate to {url}: {error}");
+        }
         if let Event::WindowEvent {
             event: WindowEvent::CloseRequested,
             ..
