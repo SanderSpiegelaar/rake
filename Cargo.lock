@@ -1556,6 +1556,10 @@ dependencies = [
 [[package]]
 name = "rake-core"
 version = "0.1.0"
+dependencies = [
+ "rake-config",
+ "serde_json",
+]
 
 [[package]]
 name = "rake-runtime"

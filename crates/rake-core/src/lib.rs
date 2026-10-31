@@ -5,6 +5,8 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
+use rake_config::RakeConfig;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TemplateTarget {
     MacosArm64,
@@ -59,12 +61,15 @@ pub enum Error {
     },
     InvalidTemplate(String),
     ChecksumMismatch,
+    InvalidInput(String),
+    Assembly(String),
 }
 
 impl Error {
     pub fn exit_code(&self) -> i32 {
         match self {
-            Self::Io(_) => 3,
+            Self::InvalidInput(_) => 2,
+            Self::Io(_) | Self::Assembly(_) => 3,
             _ => 4,
         }
     }
@@ -75,10 +80,12 @@ impl fmt::Display for Error {
         match self {
             Self::UnsupportedTarget(target) => write!(f, "unsupported template target: {target}"),
             Self::MissingCacheDirectory => write!(f, "cannot find the user cache directory"),
-            Self::Io(error) => write!(f, "template cache: {error}"),
+            Self::Io(error) => write!(f, "{error}"),
             Self::Command { program, detail } => write!(f, "{program}: {detail}"),
             Self::InvalidTemplate(detail) => write!(f, "invalid template: {detail}"),
             Self::ChecksumMismatch => write!(f, "template checksum mismatch"),
+            Self::InvalidInput(detail) => write!(f, "{detail}"),
+            Self::Assembly(detail) => write!(f, "app assembly: {detail}"),
         }
     }
 }
@@ -96,6 +103,102 @@ impl From<io::Error> for Error {
     fn from(error: io::Error) -> Self {
         Self::Io(error)
     }
+}
+
+/// Copy a template into <output_dir>/<Name>.app without modifying the template.
+/// Inject paths are resolved from the caller's working directory.
+pub fn assemble(
+    config: &RakeConfig,
+    template: &Path,
+    output_dir: &Path,
+    force: bool,
+) -> Result<PathBuf, Error> {
+    config
+        .validate()
+        .map_err(|error| Error::InvalidInput(error.to_string()))?;
+    let name = config.app_name();
+    if name.trim().is_empty()
+        || name == "."
+        || name == ".."
+        || name.chars().any(|c| matches!(c, '/' | '\\' | ':' | '\0'))
+    {
+        return Err(Error::InvalidInput(
+            "name: must be a nonempty file name".into(),
+        ));
+    }
+    let destination = output_dir.join(format!("{name}.app"));
+    let check_destination = || -> Result<bool, Error> {
+        match fs::symlink_metadata(&destination) {
+            Ok(_) if !force => Err(Error::InvalidInput(format!(
+                "{} already exists; use --force to replace it",
+                destination.display()
+            ))),
+            Ok(_) => Ok(true),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(error.into()),
+        }
+    };
+    check_destination()?;
+    if !complete_bundle(template) {
+        return Err(Error::InvalidTemplate(
+            "bundle is missing its executable or plist".into(),
+        ));
+    }
+    fs::create_dir_all(output_dir)?;
+    let canonical_template = fs::canonicalize(template)?;
+    if fs::canonicalize(output_dir)?.starts_with(&canonical_template)
+        || fs::canonicalize(&destination).is_ok_and(|path| path == canonical_template)
+    {
+        return Err(Error::InvalidInput(
+            "output must not replace or be inside the template".into(),
+        ));
+    }
+    let staging = Staging::new(output_dir)?;
+    let bundle = staging.0.join(format!("{name}.app"));
+    run(Command::new("/usr/bin/ditto").arg(template).arg(&bundle))
+        .map_err(|error| Error::Assembly(error.to_string()))?;
+    let contents = bundle.join("Contents");
+    fs::rename(
+        contents.join("MacOS/rake-runtime"),
+        contents.join("MacOS").join(&name),
+    )?;
+    run(Command::new("/usr/bin/plutil")
+        .args(["-replace", "CFBundleExecutable", "-string", &name])
+        .arg(contents.join("Info.plist")))
+    .map_err(|error| Error::Assembly(error.to_string()))?;
+    let resources = contents.join("Resources");
+    fs::create_dir_all(resources.join("inject"))?;
+    let mut written = config.clone();
+    written.inject.clear();
+    for source in &config.inject {
+        let filename = source.file_name().ok_or_else(|| {
+            Error::InvalidInput(format!("inject: missing file name: {}", source.display()))
+        })?;
+        let target = resources.join("inject").join(filename);
+        if target.exists() {
+            return Err(Error::InvalidInput(format!(
+                "inject: duplicate file name: {}",
+                filename.to_string_lossy()
+            )));
+        }
+        fs::copy(source, target)?;
+        written.inject.push(PathBuf::from(filename));
+    }
+    let json = serde_json::to_vec_pretty(&written)
+        .map_err(|error| Error::InvalidInput(error.to_string()))?;
+    fs::write(resources.join("config.json"), json)?;
+    let old = staging.0.join("old.app");
+    let exists = check_destination()?;
+    if exists {
+        fs::rename(&destination, &old)?;
+    }
+    if let Err(error) = fs::rename(&bundle, &destination) {
+        if exists {
+            fs::rename(&old, &destination)?;
+        }
+        return Err(error.into());
+    }
+    Ok(destination)
 }
 
 /// Fetch and verify the version-matched template, or reuse the complete cached bundle.
@@ -228,6 +331,8 @@ fn run(command: &mut Command) -> Result<String, Error> {
     let program = match command.get_program().to_str() {
         Some("curl") => "curl",
         Some("shasum") => "shasum",
+        Some("/usr/bin/ditto") => "ditto",
+        Some("/usr/bin/plutil") => "plutil",
         _ => "tar",
     };
     let output = command.output().map_err(|error| Error::Command {
@@ -280,6 +385,146 @@ mod tests {
         thread,
         time::Duration,
     };
+
+    fn assembly_fixture() -> (Staging, PathBuf, RakeConfig) {
+        let temp = Staging::new(&env::temp_dir()).unwrap();
+        let template = temp.0.join("Rake.app");
+        fs::create_dir_all(template.join("Contents/MacOS")).unwrap();
+        fs::create_dir_all(template.join("Contents/Resources")).unwrap();
+        fs::write(template.join("Contents/MacOS/rake-runtime"), "runtime").unwrap();
+        fs::write(template.join("Contents/Resources/icon.icns"), "icon").unwrap();
+        fs::write(template.join("Contents/Info.plist"), r#"<?xml version="1.0"?><plist version="1.0"><dict><key>CFBundleExecutable</key><string>rake-runtime</string></dict></plist>"#).unwrap();
+        let mut config = RakeConfig::new("https://example.com/page");
+        config.name = Some("My App".into());
+        (temp, template, config)
+    }
+
+    #[test]
+    fn assembles_layout_executable_config_and_inject_files() {
+        use std::os::unix::fs::PermissionsExt;
+        let (temp, template, mut config) = assembly_fixture();
+        let executable = template.join("Contents/MacOS/rake-runtime");
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).unwrap();
+        for (name, body) in [
+            ("style.css", "body {color:red}"),
+            ("probe.js", "window.proof = 1"),
+        ] {
+            let file = temp.0.join(name);
+            fs::write(&file, body).unwrap();
+            config.inject.push(file);
+        }
+        let bundle = assemble(&config, &template, &temp.0.join("out"), false).unwrap();
+        assert!(bundle.ends_with("out/My App.app"));
+        let executable = bundle.join("Contents/MacOS/My App");
+        assert_eq!(fs::read_to_string(&executable).unwrap(), "runtime");
+        assert_eq!(
+            fs::metadata(executable).unwrap().permissions().mode() & 0o777,
+            0o755
+        );
+        assert!(!bundle.join("Contents/MacOS/rake-runtime").exists());
+        assert_eq!(
+            run(Command::new("/usr/bin/plutil")
+                .args(["-extract", "CFBundleExecutable", "raw", "-o", "-"])
+                .arg(bundle.join("Contents/Info.plist")))
+            .unwrap()
+            .trim(),
+            "My App"
+        );
+        let resources = bundle.join("Contents/Resources");
+        let written: RakeConfig =
+            serde_json::from_slice(&fs::read(resources.join("config.json")).unwrap()).unwrap();
+        let mut expected = config.clone();
+        expected.inject = vec!["style.css".into(), "probe.js".into()];
+        assert_eq!(written, expected);
+        for source in config.inject {
+            assert_eq!(
+                fs::read(resources.join("inject").join(source.file_name().unwrap())).unwrap(),
+                fs::read(source).unwrap()
+            );
+        }
+        assert_eq!(fs::read(resources.join("icon.icns")).unwrap(), b"icon");
+        assert!(template.join("Contents/MacOS/rake-runtime").exists());
+        assert!(!template.join("Contents/Resources/config.json").exists());
+    }
+
+    #[test]
+    fn refuses_overwrite_and_force_replaces_only_after_success() {
+        let (temp, template, mut config) = assembly_fixture();
+        let output = temp.0.join("out");
+        let bundle = assemble(&config, &template, &output, false).unwrap();
+        let marker = bundle.join("marker");
+        fs::write(&marker, "keep me").unwrap();
+        let error = assemble(&config, &template, &output, false).unwrap_err();
+        assert_eq!(error.exit_code(), 2);
+        assert!(error.to_string().contains("--force"));
+        assert_eq!(fs::read_to_string(&marker).unwrap(), "keep me");
+        config.inject = vec![temp.0.join("missing.js")];
+        assert_eq!(
+            assemble(&config, &template, &output, true)
+                .unwrap_err()
+                .exit_code(),
+            3
+        );
+        assert_eq!(fs::read_to_string(&marker).unwrap(), "keep me");
+        assert_eq!(fs::read_dir(&output).unwrap().count(), 1);
+        config.inject.clear();
+        assert_eq!(assemble(&config, &template, &output, true).unwrap(), bundle);
+        assert!(!marker.exists());
+        assert_eq!(fs::read_dir(output).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn rejects_duplicate_inject_names_and_unsafe_app_names() {
+        let (temp, template, mut config) = assembly_fixture();
+        let output = temp.0.join("out");
+        for directory in ["one", "two"] {
+            fs::create_dir(temp.0.join(directory)).unwrap();
+            let file = temp.0.join(directory).join("same.js");
+            fs::write(&file, directory).unwrap();
+            config.inject.push(file);
+        }
+        let error = assemble(&config, &template, &output, false).unwrap_err();
+        assert!(error.to_string().contains("duplicate file name: same.js"));
+        assert_eq!(error.exit_code(), 2);
+        assert_eq!(fs::read_dir(&output).unwrap().count(), 0);
+        config.inject.clear();
+        for name in [
+            "",
+            " ",
+            ".",
+            "..",
+            "../escape",
+            "/absolute",
+            "bad:name",
+            "bad\\name",
+            "bad\0name",
+        ] {
+            config.name = Some(name.into());
+            assert_eq!(
+                assemble(&config, &template, &output, false)
+                    .unwrap_err()
+                    .exit_code(),
+                2,
+                "{name:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn refuses_to_replace_or_write_inside_template() {
+        let (temp, template, mut config) = assembly_fixture();
+        config.name = Some("Rake".into());
+        for output in [&temp.0, &template] {
+            assert_eq!(
+                assemble(&config, &template, output, true)
+                    .unwrap_err()
+                    .exit_code(),
+                2
+            );
+            assert!(complete_bundle(&template));
+            assert!(!template.join("Contents/Resources/config.json").exists());
+        }
+    }
 
     struct Server {
         url: String,
