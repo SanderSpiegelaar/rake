@@ -164,7 +164,7 @@ fn main() {
     if json {
         let result = serde_json::json!({
             "status": if code == 0 { "success" } else { "error" },
-            "app_path": app_path,
+            "app_path": app_path.as_deref().map(Path::to_string_lossy),
             "duration": started.elapsed().as_secs_f64(),
             "warnings": warnings,
             "error": error,
