@@ -75,19 +75,16 @@ impl Args {
             let mut config: RakeConfig = serde_json::from_slice(&bytes).map_err(|error| {
                 Error::InvalidInput(format!("config {}: {error}", path.display()))
             })?;
-            if self.icon.is_none()
-                && let Some(icon) = &mut config.icon
+            let directory = path.parent().unwrap_or(Path::new("."));
+            if let Some(icon) = &mut config.icon
                 && !icon.split_once("://").is_some_and(|(scheme, _)| {
                     scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("https")
                 })
-                && Path::new(icon).is_relative()
             {
-                *icon = path
-                    .parent()
-                    .unwrap_or(Path::new("."))
-                    .join(&*icon)
-                    .to_string_lossy()
-                    .into_owned();
+                *icon = directory.join(&*icon).to_string_lossy().into_owned();
+            }
+            for file in &mut config.inject {
+                *file = directory.join(&*file);
             }
             config
         } else {
@@ -185,9 +182,9 @@ mod tests {
             "--dark-mode",
             "--debug",
             "--inject",
-            "style.css",
+            "/tmp/style.css",
             "--inject",
-            "script.js",
+            "/tmp/script.js",
             "--safe-domain",
             "example.com",
             "--safe-domain",
@@ -222,9 +219,9 @@ mod tests {
                 "Example App",
                 "--dark-mode",
                 "--inject",
-                "style.css",
+                "/tmp/style.css",
                 "--inject",
-                "script.js",
+                "/tmp/script.js",
                 "--safe-domain",
                 "example.com",
                 "--safe-domain",
@@ -260,23 +257,22 @@ mod tests {
     }
 
     #[test]
-    fn file_icon_paths_are_relative_to_config_but_flag_paths_are_not() {
+    fn file_paths_are_relative_to_config_but_flag_paths_are_not() {
         with_config(
-            r#"{"url":"https://example.com","icon":"icon.png"}"#,
+            r#"{"url":"https://example.com","icon":"icon.png","inject":["style.css","/abs.js"]}"#,
             |path| {
                 let config = Args::try_parse_from(["rake", "--config", path.to_str().unwrap()])
                     .unwrap()
                     .merge()
                     .unwrap();
+                let directory = path.parent().unwrap();
                 assert_eq!(
                     config.icon,
-                    Some(
-                        path.parent()
-                            .unwrap()
-                            .join("icon.png")
-                            .to_string_lossy()
-                            .into_owned()
-                    )
+                    Some(directory.join("icon.png").to_string_lossy().into_owned())
+                );
+                assert_eq!(
+                    config.inject,
+                    [directory.join("style.css"), PathBuf::from("/abs.js")]
                 );
                 let config = Args::try_parse_from([
                     "rake",
