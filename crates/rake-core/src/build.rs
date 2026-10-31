@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use rake_config::RakeConfig;
 
-use crate::{Error, Target, TemplateOptions};
+use crate::{Error, Target, TemplateOptions, TemplateTarget};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BuildStep {
@@ -51,11 +51,20 @@ pub fn build(
     config
         .validate()
         .map_err(|error| Error::InvalidInput(error.to_string()))?;
+    let host = TemplateTarget::current()?;
+    let platform = host.platform();
+    let target = options.template.target.unwrap_or(host);
+    platform.validate(options.target, options.install)?;
+    if target.platform() != platform {
+        return Err(Error::InvalidInput(
+            "template must match the host OS".into(),
+        ));
+    }
     progress(BuildStep::Template);
-    let template = crate::ensure_template(&options.template)
+    let template = crate::ensure_template_for(&options.template, target)
         .map_err(|error| Error::MissingTemplate(error.to_string()))?;
     progress(BuildStep::Assembling);
-    let app = crate::assemble_with_progress(
+    let app = crate::host::assemble_with_progress(
         config,
         &template,
         &options.output_dir,
@@ -63,16 +72,20 @@ pub fn build(
         &mut progress,
     )?;
     *warnings = app.warnings;
-    let output_path = match options.target {
-        Target::App => app.path.clone(),
-        Target::Dmg => {
-            progress(BuildStep::Packaging);
-            crate::package_dmg(&app.path, &options.output_dir, options.force)?
-        }
-    };
+    if options.target != Target::App {
+        progress(BuildStep::Packaging);
+    }
+    let output_path = crate::host::package(
+        config,
+        &app.path,
+        &options.output_dir,
+        options.target,
+        options.force,
+        target,
+    )?;
     if options.install {
         progress(BuildStep::Installing);
-        crate::install(&app.path, std::path::Path::new("/Applications"))?;
+        crate::host::install_default(&app.path)?;
     }
     progress(BuildStep::Done);
     Ok(BuildResult {

@@ -38,7 +38,12 @@ impl NavigationPolicy {
             return true;
         }
         if Url::parse(url).is_ok_and(|url| matches!(url.scheme(), "http" | "https")) {
-            match Command::new("open").arg(url).status() {
+            let opener = if cfg!(target_os = "linux") {
+                "xdg-open"
+            } else {
+                "open"
+            };
+            match Command::new(opener).arg(url).status() {
                 Ok(status) if status.success() => {}
                 Ok(status) => eprintln!("Cannot open {url} in the default browser: {status}"),
                 Err(error) => eprintln!("Cannot open {url} in the default browser: {error}"),

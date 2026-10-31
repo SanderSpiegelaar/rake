@@ -64,7 +64,7 @@ The core library exists from M0, so the CLI stays a thin wrapper from its first 
 ## M5: More platforms
 
 1. macOS Intel and universal templates.
-2. Linux: X11 template, `.deb` and tarball. Native Wayland needs wry's GTK path, so test it separately.
+2. Linux: WebKitGTK template for x86_64 and arm64, `.desktop` file, PNG icon, `.deb`, and tarball. The runtime uses wry's GTK container path for X11 and native Wayland. See [Linux verification](cli-usage.md#linux-verification) for observed behaviour.
 3. Windows: WebView2 template, exe icon swap, ZIP.
 4. Then the P1 options: tray, multi-window, global shortcut, and the rest.
 

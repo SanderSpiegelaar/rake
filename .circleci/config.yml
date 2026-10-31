@@ -1,6 +1,12 @@
 version: 2.1
 
 executors:
+  linux:
+    machine:
+      image: ubuntu-2404:current
+    resource_class: medium
+    environment:
+      CARGO_TERM_COLOR: always
   macos:
     macos:
       xcode: 27.2.0
@@ -9,6 +15,13 @@ executors:
       CARGO_TERM_COLOR: always
 
 commands:
+  linux_dependencies:
+    steps:
+      - run:
+          name: Install WebKitGTK and smoke test tools
+          command: |
+            sudo apt-get update
+            sudo apt-get install -y libwebkit2gtk-4.1-dev libxdo-dev libgdk-pixbuf2.0-bin pkg-config xvfb x11-apps imagemagick weston dbus-x11 fonts-dejavu xdg-utils
   setup:
     steps:
       - checkout
@@ -38,6 +51,21 @@ commands:
             - target
 
 jobs:
+  check-linux:
+    executor: linux
+    steps:
+      - setup
+      - linux_dependencies
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace --locked
+      - run:
+          command: python3 tests/linux_smoke.py
+          no_output_timeout: 15m
+      - store_artifacts:
+          path: target/linux-smoke
+      - save_cargo_cache
+
   check:
     executor: macos
     steps:
@@ -55,7 +83,7 @@ jobs:
           command: python3 tests/smoke.py
           no_output_timeout: 15m
 
-  release:
+  release-macos:
     executor: macos
     steps:
       - setup
@@ -90,6 +118,54 @@ jobs:
             lipo rake -verify_arch x86_64
             shasum -a 256 rake >> SHA256SUMS
             shasum -a 256 --check SHA256SUMS
+      - run:
+          name: Stage macOS assets
+          command: |
+            mkdir -p release-assets
+            cp target/template/rake "target/template/rake-template-${CIRCLE_TAG#v}-macos-"*.tar.gz release-assets/
+      - persist_to_workspace:
+          root: release-assets
+          paths:
+            - rake
+            - rake-template-*.tar.gz
+
+  release-linux:
+    parameters:
+      arch:
+        type: string
+      resource:
+        type: string
+    machine:
+      image: ubuntu-2404:current
+    resource_class: << parameters.resource >>
+    steps:
+      - setup
+      - linux_dependencies
+      - run: cargo xtask template << parameters.arch >>
+      - run: cargo build --release --locked --package rake-cli
+      - run:
+          name: Stage Linux assets
+          command: |
+            mkdir -p release-assets
+            cp target/release/rake release-assets/rake-linux-<< parameters.arch >>
+            cp "target/template/rake-template-${CIRCLE_TAG#v}-linux-<< parameters.arch >>.tar.gz" release-assets/
+      - persist_to_workspace:
+          root: release-assets
+          paths:
+            - rake-linux-<< parameters.arch >>
+            - rake-template-*-linux-<< parameters.arch >>.tar.gz
+
+  publish:
+    executor: macos
+    steps:
+      - attach_workspace:
+          at: release-assets
+      - run:
+          name: Combine release checksums
+          working_directory: release-assets
+          command: |
+            shasum -a 256 rake rake-linux-* rake-template-*.tar.gz > SHA256SUMS
+            shasum -a 256 --check SHA256SUMS
       # GH_TOKEN comes from the github-release context and needs contents: write on the repo.
       - run:
           name: Publish release
@@ -97,22 +173,47 @@ jobs:
             command -v gh >/dev/null || HOMEBREW_NO_AUTO_UPDATE=1 brew install gh
             export GH_REPO="$CIRCLE_PROJECT_USERNAME/$CIRCLE_PROJECT_REPONAME"
             gh release create "$CIRCLE_TAG" --verify-tag --title "$CIRCLE_TAG" --generate-notes \
-              "target/template/rake-template-${CIRCLE_TAG#v}-macos-arm64.tar.gz" \
-              "target/template/rake-template-${CIRCLE_TAG#v}-macos-x86_64.tar.gz" \
-              "target/template/rake-template-${CIRCLE_TAG#v}-macos-universal.tar.gz" \
-              target/template/SHA256SUMS \
-              target/template/rake
+              release-assets/*
 
 workflows:
   ci:
     jobs:
       - check
+      - check-linux
       - smoke
 
   release:
     jobs:
-      - release:
+      - release-macos:
+          filters:
+            tags:
+              only: /^v.*/
+            branches:
+              ignore: /.*/
+      - release-linux:
+          name: release-linux-x86_64
+          arch: x86_64
+          resource: medium
+          filters:
+            tags:
+              only: /^v.*/
+            branches:
+              ignore: /.*/
+      - release-linux:
+          name: release-linux-arm64
+          arch: arm64
+          resource: arm.medium
+          filters:
+            tags:
+              only: /^v.*/
+            branches:
+              ignore: /.*/
+      - publish:
           context: github-release
+          requires:
+            - release-macos
+            - release-linux-x86_64
+            - release-linux-arm64
           filters:
             tags:
               only: /^v.*/

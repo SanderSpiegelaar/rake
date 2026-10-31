@@ -2,15 +2,17 @@
 
 # Rake
 
-Turn a website into a macOS app using the system webview. Rake copies a prebuilt template, so building an app needs no Rust, Node, or Xcode installation.
+Turn a website into a macOS or Linux app using the system webview. Rake copies a prebuilt template, so building an app needs no Rust, Node, or Xcode installation.
 
 ## Install
 
-Rake runs on Apple Silicon and Intel Macs. The CLI needs network access for its first template download and for site icons.
+Rake runs on Apple Silicon and Intel Macs, and on Linux x86_64 and arm64. Linux apps require WebKitGTK 4.1 and GTK 3. On Ubuntu 24.04, install them with `sudo apt install libwebkit2gtk-4.1-0 libgtk-3-0t64 xdg-utils`. The CLI also uses `curl` and `tar`, plus `dpkg-deb` for Debian packages.
+
+The CLI needs network access for its first template download and for site icons.
 
 No release is published yet. These steps apply once a release includes both the CLI and its matching template.
 
-1. Open [GitHub Releases](https://github.com/SanderSpiegelaar/rake/releases). Download the `rake` CLI binary, a universal binary for both architectures, and save it as `~/Downloads/rake`. If the asset is an archive, extract the `rake` binary first.
+1. Open [GitHub Releases](https://github.com/SanderSpiegelaar/rake/releases). Download `rake` on macOS, or `rake-linux-x86_64` or `rake-linux-arm64` on Linux. Save the binary as `~/Downloads/rake`.
 2. Install the binary into your user account:
 
    ```sh
@@ -21,7 +23,7 @@ No release is published yet. These steps apply once a release includes both the 
    rake --version
    ```
 
-   Add `export PATH="$HOME/.local/bin:$PATH"` to `~/.zshrc` to keep the command available in new terminals.
+   Add `export PATH="$HOME/.local/bin:$PATH"` to your shell's startup file to keep the command available in new terminals.
 
 Rake and generated apps are not notarized. If macOS blocks a trusted download, attempt to open it, then use **System Settings > Privacy & Security > Open Anyway**. Do not disable Gatekeeper.
 
@@ -38,6 +40,8 @@ open Example.app
 
 Rake writes `Example.app` in the current directory and prints its path to stderr. The first build downloads and verifies the version-matched template. Later builds reuse the cache. If no site icon works, Rake keeps the default icon and prints a warning.
 
+On Linux, the same build writes an `Example` directory. Run `./Example/rake-runtime` to open it. Use `rake https://example.com --name Example --target tarball --force` for an archive, or `--target deb` for a Debian package. Install the package with `sudo apt install ./Example.deb`.
+
 To rebuild the same app, add `--force`:
 
 ```sh
@@ -48,7 +52,7 @@ See [CLI usage](docs/cli-usage.md) for every flag, JSON results, exit codes, and
 
 ## Development
 
-With Rust and the macOS developer tools installed, run the checks:
+With Rust and the macOS developer tools or Linux WebKitGTK development packages installed, run the checks:
 
 ```sh
 cargo fmt --all --check
@@ -57,6 +61,8 @@ cargo test --workspace
 ```
 
 The tests check that every flag in `rake --help` appears in the CLI reference.
+
+The desktop builder remains macOS-only. Linux development needs `build-essential`, `pkg-config`, `libwebkit2gtk-4.1-dev`, and `libxdo-dev`. Run `python3 tests/linux_smoke.py` with Xvfb, ImageMagick, Weston, Python, and `libgdk-pixbuf2.0-bin` installed to check X11 and native Wayland. The smoke test installs its proof package through `dpkg`, so use a disposable container or VM.
 
 See the [PRD](docs/PRD.md) and [roadmap](docs/ROADMAP.md) for scope and planned platforms.
 
