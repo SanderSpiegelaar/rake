@@ -2,4 +2,8 @@
 
 # Rake
 
-Created in [T3 Code](https://t3.codes).
+Turn any website into a small native desktop app, with no Rust toolchain on your machine.
+
+See [docs/PRD.md](docs/PRD.md) and [docs/ROADMAP.md](docs/ROADMAP.md).
+
+Licensed under [MIT](LICENSE).
