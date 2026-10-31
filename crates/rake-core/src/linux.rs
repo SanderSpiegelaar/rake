@@ -228,7 +228,7 @@ pub(crate) fn package(
                 name
             ),
         )?;
-        run(Command::new("chmod").args(["-R", "go-w"]).arg(&root))?;
+        run(Command::new("chmod").args(["-R", "u=rwX,go=rX"]).arg(&root))?;
         run(Command::new("dpkg-deb")
             .args(["--build", "--root-owner-group"])
             .arg(root)
