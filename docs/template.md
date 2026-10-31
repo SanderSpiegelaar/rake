@@ -19,7 +19,8 @@ The filename is relative to `SHA256SUMS`, with two spaces after the digest.
 
 The archive contains a single `Rake.app`, with executable
 `Contents/MacOS/rake-runtime`, placeholder metadata in `Contents/Info.plist`, and
-`Contents/Resources/icon.icns`. Resources otherwise starts empty: no config,
+`Contents/Resources/icon.icns`. The plist allows plain `http://` loads in web content,
+because configs may point at http sites. Resources otherwise starts empty: no config,
 injected scripts, or site assets. The monochrome icon is a replaceable placeholder.
 The task ad-hoc signs the bundle before packaging. Builders must re-sign after
 changing its contents for distribution. No Developer ID signing or notarization

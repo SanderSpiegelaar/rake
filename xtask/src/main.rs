@@ -98,6 +98,7 @@ fn template_plist() -> String {
     <key>CFBundleVersion</key><string>{version}</string>
     <key>CFBundleIconFile</key><string>icon.icns</string>
     <key>NSHighResolutionCapable</key><true/>
+    <key>NSAppTransportSecurity</key><dict><key>NSAllowsArbitraryLoadsInWebContent</key><true/></dict>
 </dict>
 </plist>
 "#,
@@ -126,6 +127,7 @@ mod tests {
         ] {
             assert!(plist.contains(&format!("<string>{value}</string>")));
         }
+        assert!(plist.contains("<key>NSAllowsArbitraryLoadsInWebContent</key><true/>"));
     }
 
     #[test]
