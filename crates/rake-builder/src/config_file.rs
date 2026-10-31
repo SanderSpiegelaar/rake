@@ -85,6 +85,7 @@ impl Builder {
                                     });
                                 }
                                 builder.draft = draft;
+                                builder.icon_imported(cx);
                             }
                             Err(error) => builder.config_file_error = Some(error),
                         }
