@@ -61,9 +61,7 @@ impl IconPicker {
 impl IconState {
     fn cancel(&mut self) {
         self.request += 1;
-        if matches!(self.status, Status::Loading) {
-            self.status = Status::Idle;
-        }
+        self.status = Status::Idle;
     }
 
     fn begin(&mut self) -> u64 {
@@ -79,6 +77,10 @@ impl IconState {
         draft: &mut ConfigDraft,
     ) {
         if request != self.request {
+            // Only stale outputs go; replaced icons may still be referenced by an exported config.
+            if let Ok(icon) = result {
+                let _ = fs::remove_file(icon.path);
+            }
             return;
         }
         match result {
@@ -151,7 +153,6 @@ impl Builder {
     pub fn icon_imported(&mut self, cx: &mut Context<Self>) {
         self.icon_picker.state.cancel();
         self.icon_picker.state.preview = None;
-        self.icon_picker.state.status = Status::Idle;
         let source = self.draft.text[Field::Icon as usize].clone();
         if !source.is_empty() {
             let icon = if source.starts_with("http://") || source.starts_with("https://") {
@@ -417,6 +418,15 @@ mod tests {
         );
         assert!(draft.config().unwrap().icon.is_none());
         assert!(state.preview.is_none());
+        assert!(matches!(state.status, Status::Idle));
+    }
+
+    #[test]
+    fn changing_the_url_clears_a_fetch_error() {
+        let mut state = IconState::default();
+        let request = state.begin();
+        state.finish(request, Err("No usable icon found".into()), &mut draft());
+        state.cancel();
         assert!(matches!(state.status, Status::Idle));
     }
 }
