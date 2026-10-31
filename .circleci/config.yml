@@ -1,0 +1,120 @@
+version: 2.1
+
+executors:
+  macos:
+    macos:
+      xcode: 27.2.0
+    resource_class: m4pro.medium
+    environment:
+      CARGO_TERM_COLOR: always
+
+commands:
+  setup:
+    steps:
+      - checkout
+      - restore_cache:
+          keys:
+            - cargo-{{ arch }}-{{ checksum "rust-toolchain.toml" }}-{{ checksum "Cargo.lock" }}
+            - cargo-{{ arch }}-{{ checksum "rust-toolchain.toml" }}-
+      # The Xcode image ships without Rust; rustup reads the pinned toolchain from rust-toolchain.toml.
+      - run:
+          name: Install Rust
+          command: |
+            if ! command -v rustup >/dev/null && [ ! -x "$HOME/.cargo/bin/rustup" ]; then
+              curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path --default-toolchain none
+            fi
+            echo 'export PATH="$HOME/.cargo/bin:$PATH"' >> "$BASH_ENV"
+            source "$BASH_ENV"
+            rustup show
+  save_cargo_cache:
+    steps:
+      - save_cache:
+          key: cargo-{{ arch }}-{{ checksum "rust-toolchain.toml" }}-{{ checksum "Cargo.lock" }}
+          paths:
+            - ~/.rustup
+            - ~/.cargo/bin
+            - ~/.cargo/registry
+            - ~/.cargo/git
+            - target
+
+jobs:
+  check:
+    executor: macos
+    steps:
+      - setup
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace
+      - save_cargo_cache
+
+  smoke:
+    executor: macos
+    steps:
+      - setup
+      - run:
+          command: python3 tests/smoke.py
+          no_output_timeout: 15m
+
+  release:
+    executor: macos
+    steps:
+      - setup
+      - run:
+          name: Check release version
+          command: |
+            python3 - \<<'PY'
+            import json
+            import os
+            import subprocess
+
+            metadata = json.loads(subprocess.check_output([
+                "cargo", "metadata", "--locked", "--no-deps", "--format-version", "1"
+            ]))
+            tag = os.environ["CIRCLE_TAG"]
+            for package in metadata["packages"]:
+                if tag != f'v{package["version"]}':
+                    raise SystemExit(f'{tag} does not match {package["name"]} {package["version"]}')
+            PY
+      - run: cargo xtask template arm64
+      - run: cargo xtask template x86_64
+      - run: cargo xtask template universal
+      - run: cargo build --release --locked --package rake-cli --target aarch64-apple-darwin --target-dir target
+      - run: cargo build --release --locked --package rake-cli --target x86_64-apple-darwin --target-dir target
+      - run:
+          name: Prepare CLI and checksums
+          working_directory: target/template
+          command: |
+            lipo -create ../aarch64-apple-darwin/release/rake ../x86_64-apple-darwin/release/rake -output rake
+            codesign --force --sign - rake
+            lipo rake -verify_arch arm64
+            lipo rake -verify_arch x86_64
+            shasum -a 256 rake >> SHA256SUMS
+            shasum -a 256 --check SHA256SUMS
+      # GH_TOKEN comes from the github-release context and needs contents: write on the repo.
+      - run:
+          name: Publish release
+          command: |
+            command -v gh >/dev/null || HOMEBREW_NO_AUTO_UPDATE=1 brew install gh
+            export GH_REPO="$CIRCLE_PROJECT_USERNAME/$CIRCLE_PROJECT_REPONAME"
+            gh release create "$CIRCLE_TAG" --verify-tag --title "$CIRCLE_TAG" --generate-notes \
+              "target/template/rake-template-${CIRCLE_TAG#v}-macos-arm64.tar.gz" \
+              "target/template/rake-template-${CIRCLE_TAG#v}-macos-x86_64.tar.gz" \
+              "target/template/rake-template-${CIRCLE_TAG#v}-macos-universal.tar.gz" \
+              target/template/SHA256SUMS \
+              target/template/rake
+
+workflows:
+  ci:
+    jobs:
+      - check
+      - smoke
+
+  release:
+    jobs:
+      - release:
+          context: github-release
+          filters:
+            tags:
+              only: /^v.*/
+            branches:
+              ignore: /.*/

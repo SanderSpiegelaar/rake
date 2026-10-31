@@ -86,8 +86,8 @@ rake/
 ├── tests/
 │   └── fixtures/              # sample configs and icons for end-to-end tests
 ├── docs/                      # PRD, roadmap, cli-usage.md
-└── .github/
-    └── workflows/             # ci.yml (checks), release.yml (template + CLI)
+└── .circleci/
+    └── config.yml             # ci workflow (checks, smoke), release workflow (template + CLI)
 ```
 
 - Only `rake-runtime` goes into generated apps, so it must stay small: no GPUI, no HTTP client, no image libraries. Those belong in `rake-core`.
