@@ -174,6 +174,10 @@ pub fn assemble(
     run(Command::new("/usr/bin/ditto").arg(template).arg(&bundle))
         .map_err(|error| Error::Assembly(error.to_string()))?;
     let contents = bundle.join("Contents");
+    fs::rename(
+        contents.join("MacOS/rake-runtime"),
+        contents.join("MacOS").join(&name),
+    )?;
     let identifier = config.identifier();
     let version = env!("CARGO_PKG_VERSION");
     let metadata = [
@@ -182,7 +186,7 @@ pub fn assemble(
         ("CFBundleIdentifier", identifier.as_str()),
         ("CFBundleShortVersionString", version),
         ("CFBundleVersion", version),
-        ("CFBundleExecutable", "rake-runtime"),
+        ("CFBundleExecutable", name.as_str()),
         ("CFBundleIconFile", ICON_FILE),
     ];
     for (key, value) in metadata {
@@ -799,7 +803,7 @@ mod tests {
             ("CFBundleIdentifier", identifier),
             ("CFBundleShortVersionString", env!("CARGO_PKG_VERSION")),
             ("CFBundleVersion", env!("CARGO_PKG_VERSION")),
-            ("CFBundleExecutable", "rake-runtime"),
+            ("CFBundleExecutable", name),
             ("CFBundleIconFile", "icon.icns"),
         ] {
             let actual = run(Command::new("/usr/bin/plutil")
@@ -808,7 +812,7 @@ mod tests {
             .unwrap();
             assert_eq!(actual.trim_end_matches('\n'), expected, "{key}");
         }
-        assert!(bundle.join("Contents/MacOS/rake-runtime").is_file());
+        assert!(bundle.join("Contents/MacOS").join(name).is_file());
         assert!(bundle.join("Contents/Resources/icon.icns").is_file());
     }
 
@@ -903,20 +907,20 @@ mod tests {
         assert_eq!(result.warnings.len(), 1);
         let bundle = result.path;
         assert!(bundle.ends_with("out/My App.app"));
-        let executable = bundle.join("Contents/MacOS/rake-runtime");
+        let executable = bundle.join("Contents/MacOS/My App");
         assert_eq!(fs::read_to_string(&executable).unwrap(), "runtime");
         assert_eq!(
             fs::metadata(executable).unwrap().permissions().mode() & 0o777,
             0o755
         );
-        assert!(!bundle.join("Contents/MacOS/My App").exists());
+        assert!(!bundle.join("Contents/MacOS/rake-runtime").exists());
         assert_eq!(
             run(Command::new("/usr/bin/plutil")
                 .args(["-extract", "CFBundleExecutable", "raw", "-o", "-"])
                 .arg(bundle.join("Contents/Info.plist")))
             .unwrap()
             .trim(),
-            "rake-runtime"
+            "My App"
         );
         let resources = bundle.join("Contents/Resources");
         let written: RakeConfig =
