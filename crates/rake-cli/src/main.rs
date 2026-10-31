@@ -1,5 +1,4 @@
 use std::{
-    fs,
     io::{self, Write},
     path::{Path, PathBuf},
     process,
@@ -93,24 +92,7 @@ impl From<OutputTarget> for Target {
 impl Args {
     fn merge(&self) -> Result<RakeConfig, Error> {
         let mut config = if let Some(path) = &self.config {
-            let bytes = fs::read(path).map_err(|error| {
-                Error::InvalidInput(format!("config {}: {error}", path.display()))
-            })?;
-            let mut config: RakeConfig = serde_json::from_slice(&bytes).map_err(|error| {
-                Error::InvalidInput(format!("config {}: {error}", path.display()))
-            })?;
-            let directory = path.parent().unwrap_or(Path::new("."));
-            if let Some(icon) = &mut config.icon
-                && !icon.split_once("://").is_some_and(|(scheme, _)| {
-                    scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("https")
-                })
-            {
-                *icon = directory.join(&*icon).to_string_lossy().into_owned();
-            }
-            for file in &mut config.inject {
-                *file = directory.join(&*file);
-            }
-            config
+            rake_core::load_config(path)?
         } else {
             RakeConfig::new(self.url.clone().unwrap_or_default())
         };
@@ -205,7 +187,10 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::{
+        fs,
+        sync::atomic::{AtomicU64, Ordering},
+    };
 
     fn with_config(contents: &str, test: impl FnOnce(&Path)) {
         static NEXT: AtomicU64 = AtomicU64::new(0);

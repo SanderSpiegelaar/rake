@@ -4,7 +4,10 @@ use gpui::{
 };
 
 mod build;
+mod config_file;
+mod config_io;
 mod form;
+mod icon_picker;
 mod input;
 
 use form::{ConfigDraft, Field};
@@ -17,6 +20,9 @@ struct Builder {
     inputs: Vec<Entity<TextInput>>,
     toggles: [FocusHandle; 4],
     build: build::BuildControls,
+    icon_picker: icon_picker::IconPicker,
+    config_file_focus: [FocusHandle; 2],
+    config_file_error: Option<String>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -37,6 +43,9 @@ impl Builder {
             .map(|(index, input)| {
                 cx.subscribe(input, move |builder, input, _: &input::Changed, cx| {
                     builder.draft.text[index] = input.read(cx).content.to_string();
+                    if index == Field::Url as usize {
+                        builder.icon_picker.url_changed();
+                    }
                     cx.notify();
                 })
             })
@@ -46,6 +55,9 @@ impl Builder {
             inputs,
             toggles: std::array::from_fn(|_| cx.focus_handle().tab_stop(true)),
             build: build::BuildControls::new(cx),
+            icon_picker: icon_picker::IconPicker::new(cx),
+            config_file_focus: std::array::from_fn(|_| cx.focus_handle().tab_stop(true)),
+            config_file_error: None,
             _subscriptions: subscriptions,
         }
     }
@@ -69,7 +81,11 @@ impl Builder {
 impl Render for Builder {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let error = self.draft.config().err();
-        let mut form = div().flex().flex_col().gap_3();
+        let mut form = div()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .child(self.config_file_controls(window, cx));
         for pair in [
             [Field::Url, Field::Name],
             [Field::Identifier, Field::Icon],
@@ -78,12 +94,10 @@ impl Render for Builder {
             [Field::Title, Field::UserAgent],
             [Field::Inject, Field::SafeDomains],
         ] {
-            form = form.child(
-                div()
-                    .flex()
-                    .gap_4()
-                    .children(pair.map(|field| self.field(field, error.as_deref()))),
-            );
+            form = form.child(div().flex().gap_4().children(pair.map(|field| match field {
+                Field::Icon => self.icon_row(window, cx).into_any_element(),
+                _ => self.field(field, error.as_deref()).into_any_element(),
+            })));
         }
         for (index, (label, checked)) in [
             ("Hide title bar", self.draft.hide_title_bar),
@@ -168,6 +182,8 @@ impl Render for Builder {
 fn main() {
     gpui_platform::application().run(|cx: &mut App| {
         input::bind_keys(cx);
+        icon_picker::bind_keys(cx);
+        config_file::bind_keys(cx);
         cx.bind_keys([
             KeyBinding::new("tab", NextField, None),
             KeyBinding::new("shift-tab", PreviousField, None),

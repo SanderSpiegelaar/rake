@@ -10,6 +10,12 @@ use std::{
 
 use serde_json::Value;
 
+#[path = "../../rake-builder/src/config_io.rs"]
+mod config_io;
+#[allow(dead_code)]
+#[path = "../../rake-builder/src/form.rs"]
+mod form;
+
 struct Fixture {
     root: PathBuf,
     home: PathBuf,
@@ -283,4 +289,125 @@ fn human_output_stays_on_stderr_and_help_remains_available() {
             0,
         );
     }
+}
+
+#[test]
+fn exported_builder_config_builds_the_same_app_as_cli_flags() {
+    use form::{ConfigDraft, Field};
+
+    let fixture = Fixture::new();
+    let icon = fixture.root.join("icon.png");
+    fs::write(
+        &icon,
+        [
+            137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1,
+            8, 6, 0, 0, 0, 31, 21, 196, 137, 0, 0, 0, 13, 73, 68, 65, 84, 120, 156, 99, 248, 207,
+            192, 240, 31, 0, 5, 0, 1, 255, 137, 153, 61, 29, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66,
+            96, 130,
+        ],
+    )
+    .unwrap();
+    let css = fixture.root.join("my style.css");
+    let js = fixture.root.join("script.js");
+    fs::write(&css, "body { color: red; }").unwrap();
+    fs::write(&js, "document.title = 'Injected';").unwrap();
+    let mut draft = ConfigDraft::default();
+    for (field, value) in [
+        (Field::Url, "https://example.com"),
+        (Field::Name, "Example"),
+        (Field::Identifier, "org.example.builder"),
+        (Field::Icon, icon.to_str().unwrap()),
+        (Field::Width, "1440"),
+        (Field::Height, "900"),
+        (Field::MinWidth, "640"),
+        (Field::MinHeight, "480"),
+        (Field::Title, "Example App"),
+        (Field::UserAgent, "Rake/1"),
+        (Field::SafeDomains, "login.example.com\nauth.example.com"),
+    ] {
+        draft.text[field as usize] = value.into();
+    }
+    draft.text[Field::Inject as usize] = format!("{}\n{}", css.display(), js.display());
+    draft.hide_title_bar = true;
+    draft.dark_mode = true;
+    draft.debug = true;
+    let exports = fixture.root.join("exports");
+    fs::create_dir(&exports).unwrap();
+    let config = exports.join("rake.json");
+    draft.export(&config).unwrap();
+    assert_eq!(
+        ConfigDraft::import(&config).unwrap().config().unwrap(),
+        draft.config().unwrap()
+    );
+    let path = format!("{}:/usr/bin:/bin", fixture.root.join("bin").display());
+    assert_result(
+        fixture
+            .command()
+            .env("PATH", &path)
+            .arg("--config")
+            .arg(&config)
+            .arg("--json")
+            .output()
+            .unwrap(),
+        0,
+    );
+    let contents = fixture.output.join("Example.app/Contents");
+    let from_export =
+        ["Resources/config.json", "Info.plist"].map(|file| fs::read(contents.join(file)).unwrap());
+    assert_result(
+        fixture
+            .command()
+            .env("PATH", &path)
+            .args([
+                "https://example.com",
+                "--name",
+                "Example",
+                "--identifier",
+                "org.example.builder",
+                "--icon",
+                icon.to_str().unwrap(),
+                "--width",
+                "1440",
+                "--height",
+                "900",
+                "--min-width",
+                "640",
+                "--min-height",
+                "480",
+                "--title",
+                "Example App",
+                "--user-agent",
+                "Rake/1",
+                "--hide-title-bar",
+                "--dark-mode",
+                "--debug",
+                "--inject",
+                css.to_str().unwrap(),
+                "--inject",
+                js.to_str().unwrap(),
+                "--safe-domain",
+                "login.example.com",
+                "--safe-domain",
+                "auth.example.com",
+                "--force",
+                "--json",
+            ])
+            .output()
+            .unwrap(),
+        0,
+    );
+    for (file, expected) in ["Resources/config.json", "Info.plist"]
+        .into_iter()
+        .zip(from_export)
+    {
+        assert_eq!(fs::read(contents.join(file)).unwrap(), expected, "{file}");
+    }
+    assert_eq!(
+        fs::read(contents.join("Resources/inject/my style.css")).unwrap(),
+        fs::read(css).unwrap()
+    );
+    assert_eq!(
+        fs::read(contents.join("Resources/inject/script.js")).unwrap(),
+        fs::read(js).unwrap()
+    );
 }

@@ -73,6 +73,17 @@ pub fn bind_keys(cx: &mut App) {
 }
 
 impl TextInput {
+    pub fn set_content(&mut self, content: String, cx: &mut Context<Self>) {
+        self.content = content.into();
+        self.selection = 0..0;
+        self.reversed = false;
+        self.marked = None;
+        self.selecting = false;
+        self.scroll = point(px(0.), px(0.));
+        cx.emit(Changed);
+        cx.notify();
+    }
+
     pub fn new(content: String, multiline: bool, cx: &mut Context<Self>) -> Self {
         Self {
             content: content.into(),
