@@ -1567,6 +1567,7 @@ dependencies = [
  "rake-config",
  "serde_json",
  "tao",
+ "url",
  "wry",
 ]
 
