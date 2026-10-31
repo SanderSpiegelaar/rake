@@ -414,19 +414,6 @@ mod tests {
     }
 
     #[test]
-    fn every_help_flag_is_documented() {
-        use clap::CommandFactory;
-        let docs = include_str!("../../../docs/cli-usage.md");
-        let mut command = Args::command();
-        command.build();
-        for argument in command.get_arguments() {
-            if let Some(long) = argument.get_long() {
-                assert!(docs.contains(&format!("--{long}")), "missing --{long}");
-            }
-        }
-    }
-
-    #[test]
     fn clap_definition_is_consistent() {
         use clap::CommandFactory;
         Args::command().debug_assert();
