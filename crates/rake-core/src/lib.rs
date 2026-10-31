@@ -620,7 +620,14 @@ mod tests {
                                 .set_read_timeout(Some(Duration::from_secs(2)))
                                 .unwrap();
                             let mut request = [0; 4096];
-                            let length = stream.read(&mut request).unwrap();
+                            let length = loop {
+                                match stream.read(&mut request) {
+                                    Err(error) if error.kind() == io::ErrorKind::Interrupted => {
+                                        continue;
+                                    }
+                                    result => break result.unwrap(),
+                                }
+                            };
                             count.fetch_add(1, Ordering::Relaxed);
                             let request = String::from_utf8_lossy(&request[..length]);
                             let path = request.split_whitespace().nth(1).unwrap();
@@ -632,7 +639,12 @@ mod tests {
                             write!(stream, "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).unwrap();
                             stream.write_all(&body).unwrap();
                         }
-                        Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                        Err(error)
+                            if matches!(
+                                error.kind(),
+                                io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+                            ) =>
+                        {
                             thread::sleep(Duration::from_millis(2));
                         }
                         Err(error) => panic!("{error}"),
