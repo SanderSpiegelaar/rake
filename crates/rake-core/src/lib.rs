@@ -10,6 +10,13 @@ use url::Url;
 
 pub const ICON_FILE: &str = "icon.icns";
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum Target {
+    #[default]
+    App,
+    Dmg,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Icon {
     Path(PathBuf),
@@ -239,6 +246,143 @@ pub fn sign(bundle: &Path) -> Result<(), Error> {
     run(Command::new("/usr/bin/codesign")
         .args(["--force", "--deep", "--sign", "-"])
         .arg(bundle))?;
+    Ok(())
+}
+
+pub fn package_dmg(app: &Path, output_dir: &Path, force: bool) -> Result<PathBuf, Error> {
+    let name = bundle_name(app)?;
+    let destination = output_dir.join(format!("{name}.dmg"));
+    let check_destination = || -> Result<(), Error> {
+        match fs::symlink_metadata(&destination) {
+            Ok(_) if !force => Err(Error::InvalidInput(format!(
+                "{} already exists; use --force to replace it",
+                destination.display()
+            ))),
+            Ok(_) => Ok(()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error.into()),
+        }
+    };
+    check_destination()?;
+    let app = fs::canonicalize(app)?;
+    prepare_output_directory(output_dir, &app)?;
+    let staging = Staging::new(output_dir)?;
+    let payload = staging.0.join("payload");
+    fs::create_dir(&payload)?;
+    let copy = payload.join(format!("{name}.app"));
+    run(Command::new("/usr/bin/ditto").arg(&app).arg(&copy))?;
+    verify_signature(&copy)?;
+    std::os::unix::fs::symlink("/Applications", payload.join("Applications"))?;
+    let image = staging.0.join(format!("{name}.dmg"));
+    run(Command::new("/usr/bin/hdiutil")
+        .args(["create", "-volname", name, "-srcfolder"])
+        .arg(&payload)
+        .args(["-ov", "-format", "UDZO"])
+        .arg(&image))?;
+    check_destination()?;
+    fs::rename(image, &destination)?;
+    Ok(destination)
+}
+
+pub fn install(app: &Path, applications: &Path) -> Result<PathBuf, Error> {
+    let name = bundle_name(app)?;
+    let identifier = bundle_identifier(app)?;
+    if !app.join("Contents/Resources/config.json").is_file() {
+        return Err(Error::InvalidInput("source is not a Rake-built app".into()));
+    }
+    let destination = applications.join(format!("{name}.app"));
+    let check_destination = || -> Result<bool, Error> {
+        match fs::symlink_metadata(&destination) {
+            Ok(metadata) => {
+                if !metadata.file_type().is_dir()
+                    || !destination.join("Contents/Resources/config.json").is_file()
+                    || bundle_identifier(&destination).ok().as_ref() != Some(&identifier)
+                {
+                    return Err(Error::InvalidInput(format!(
+                        "refusing to replace {}; it is not a Rake-built app with identifier {identifier}",
+                        destination.display()
+                    )));
+                }
+                Ok(true)
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(error.into()),
+        }
+    };
+    check_destination()?;
+    let app = fs::canonicalize(app)?;
+    if fs::canonicalize(&destination).is_ok_and(|path| path == app) {
+        return Err(Error::InvalidInput(
+            "installation must not replace the source app".into(),
+        ));
+    }
+    prepare_output_directory(applications, &app)?;
+    let staging = Staging::new(applications)?;
+    let copy = staging.0.join(format!("{name}.app"));
+    run(Command::new("/usr/bin/ditto").arg(&app).arg(&copy))?;
+    verify_signature(&copy)?;
+    let old = staging.0.join("old.app");
+    let exists = check_destination()?;
+    if exists {
+        fs::rename(&destination, &old)?;
+    }
+    if let Err(error) = fs::rename(&copy, &destination) {
+        if exists {
+            fs::rename(&old, &destination)?;
+        }
+        return Err(error.into());
+    }
+    Ok(destination)
+}
+
+fn prepare_output_directory(directory: &Path, app: &Path) -> Result<(), Error> {
+    let absolute = env::current_dir()?.join(directory);
+    for ancestor in absolute.ancestors() {
+        match fs::canonicalize(ancestor) {
+            Ok(parent) => {
+                if parent.starts_with(app) {
+                    return Err(Error::InvalidInput(
+                        "output must not be inside the source app".into(),
+                    ));
+                }
+                break;
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error.into()),
+        }
+    }
+    fs::create_dir_all(directory)?;
+    Ok(())
+}
+
+fn bundle_name(app: &Path) -> Result<&str, Error> {
+    app.file_stem()
+        .and_then(|name| name.to_str())
+        .filter(|name| {
+            app.extension().is_some_and(|extension| extension == "app")
+                && !name.trim().is_empty()
+                && !name.chars().any(|c| matches!(c, '/' | '\\' | ':' | '\0'))
+        })
+        .ok_or_else(|| Error::InvalidInput("expected a named .app bundle".into()))
+}
+
+fn bundle_identifier(app: &Path) -> Result<String, Error> {
+    let identifier = run(Command::new("/usr/bin/plutil")
+        .args(["-extract", "CFBundleIdentifier", "raw", "-o", "-"])
+        .arg(app.join("Contents/Info.plist")))?;
+    let identifier = identifier.trim_end_matches('\n');
+    if identifier.is_empty() {
+        return Err(Error::InvalidInput(
+            "app has an empty CFBundleIdentifier".into(),
+        ));
+    }
+    Ok(identifier.into())
+}
+
+fn verify_signature(app: &Path) -> Result<(), Error> {
+    run(Command::new("/usr/bin/codesign")
+        .args(["--verify", "--deep", "--strict"])
+        .arg(app))?;
     Ok(())
 }
 
@@ -573,6 +717,7 @@ fn run(command: &mut Command) -> Result<String, Error> {
         Some("/usr/bin/ditto") => "ditto",
         Some("/usr/bin/plutil") => "plutil",
         Some("/usr/bin/codesign") => "codesign",
+        Some("/usr/bin/hdiutil") => "hdiutil",
         Some("sips") => "sips",
         Some("iconutil") => "iconutil",
         _ => "tar",
@@ -627,6 +772,207 @@ mod tests {
         thread,
         time::Duration,
     };
+
+    fn install_fixture() -> (Staging, PathBuf, PathBuf) {
+        let (temp, template, config) = assembly_fixture();
+        let app = assemble(&config, &template, &temp.0.join("out"), false, None)
+            .unwrap()
+            .path;
+        let applications = temp.0.join("Applications");
+        (temp, app, applications)
+    }
+
+    #[test]
+    fn installs_fresh_app_and_preserves_signature() {
+        let (_temp, app, applications) = install_fixture();
+        let destination = install(&app, &applications).unwrap();
+        assert_eq!(destination, applications.join("My App.app"));
+        assert_eq!(Target::default(), Target::App);
+        assert_eq!(
+            fs::read(destination.join("Contents/_CodeSignature/CodeResources")).unwrap(),
+            fs::read(app.join("Contents/_CodeSignature/CodeResources")).unwrap()
+        );
+        verify_signature(&destination).unwrap();
+        assert_eq!(fs::read_dir(applications).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn replaces_same_identifier_rake_app() {
+        let (_temp, app, applications) = install_fixture();
+        let destination = install(&app, &applications).unwrap();
+        fs::write(app.join("Contents/Resources/update"), "new version").unwrap();
+        sign(&app).unwrap();
+        assert_eq!(install(&app, &applications).unwrap(), destination);
+        assert_eq!(
+            fs::read(destination.join("Contents/Resources/update")).unwrap(),
+            b"new version"
+        );
+        verify_signature(&destination).unwrap();
+        assert_eq!(fs::read_dir(applications).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn refuses_different_identifier_without_changing_existing_app() {
+        let (_temp, app, applications) = install_fixture();
+        let destination = install(&app, &applications).unwrap();
+        let plist = destination.join("Contents/Info.plist");
+        run(Command::new("/usr/bin/plutil")
+            .args([
+                "-replace",
+                "CFBundleIdentifier",
+                "-string",
+                "org.example.other",
+            ])
+            .arg(&plist))
+        .unwrap();
+        let original = fs::read(&plist).unwrap();
+        let error = install(&app, &applications).unwrap_err();
+        assert_eq!(error.exit_code(), 2);
+        assert!(error.to_string().contains("refusing to replace"));
+        assert_eq!(fs::read(plist).unwrap(), original);
+        assert_eq!(fs::read_dir(applications).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn refuses_non_rake_app_even_with_same_identifier() {
+        let (_temp, app, applications) = install_fixture();
+        let destination = install(&app, &applications).unwrap();
+        fs::remove_file(destination.join("Contents/Resources/config.json")).unwrap();
+        let original = fs::read(destination.join("Contents/Info.plist")).unwrap();
+        let error = install(&app, &applications).unwrap_err();
+        assert_eq!(error.exit_code(), 2);
+        assert!(error.to_string().contains("not a Rake-built app"));
+        assert_eq!(
+            fs::read(destination.join("Contents/Info.plist")).unwrap(),
+            original
+        );
+        assert!(!destination.join("Contents/Resources/config.json").exists());
+        assert_eq!(fs::read_dir(applications).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn refuses_install_destination_symlink() {
+        let (_temp, app, applications) = install_fixture();
+        fs::create_dir(&applications).unwrap();
+        let destination = applications.join("My App.app");
+        std::os::unix::fs::symlink(&app, &destination).unwrap();
+        assert_eq!(install(&app, &applications).unwrap_err().exit_code(), 2);
+        assert_eq!(fs::read_link(destination).unwrap(), app);
+    }
+
+    #[test]
+    fn failed_signature_verification_preserves_installed_app() {
+        let (_temp, app, applications) = install_fixture();
+        let destination = install(&app, &applications).unwrap();
+        let original = fs::read(destination.join("Contents/Resources/config.json")).unwrap();
+        fs::write(app.join("Contents/Resources/config.json"), "tampered").unwrap();
+        let error = install(&app, &applications).unwrap_err();
+        assert!(matches!(
+            error,
+            Error::Command {
+                program: "codesign",
+                ..
+            }
+        ));
+        assert_eq!(
+            fs::read(destination.join("Contents/Resources/config.json")).unwrap(),
+            original
+        );
+        verify_signature(&destination).unwrap();
+        assert_eq!(fs::read_dir(applications).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn rejects_outputs_inside_source_without_modifying_it() {
+        let (_temp, app, _) = install_fixture();
+        let nested = app.join("new/output");
+        assert_eq!(install(&app, &nested).unwrap_err().exit_code(), 2);
+        assert_eq!(
+            package_dmg(&app, &nested, false).unwrap_err().exit_code(),
+            2
+        );
+        assert!(!app.join("new").exists());
+        assert_eq!(
+            install(&app, app.parent().unwrap())
+                .unwrap_err()
+                .exit_code(),
+            2
+        );
+        verify_signature(&app).unwrap();
+    }
+
+    #[test]
+    fn refuses_dmg_overwrite_and_preserves_existing_image_on_failure() {
+        let (_temp, app, output) = install_fixture();
+        fs::create_dir(&output).unwrap();
+        let image = output.join("My App.dmg");
+        fs::write(&image, "existing image").unwrap();
+        assert_eq!(
+            package_dmg(&app, &output, false).unwrap_err().exit_code(),
+            2
+        );
+        fs::write(app.join("Contents/Resources/config.json"), "tampered").unwrap();
+        assert!(package_dmg(&app, &output, true).is_err());
+        assert_eq!(fs::read(image).unwrap(), b"existing image");
+        assert_eq!(fs::read_dir(output).unwrap().count(), 1);
+    }
+
+    #[test]
+    #[ignore = "requires cargo xtask template and macOS disk image tools"]
+    fn real_dmg_app() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let template = root.join("target/template/Rake.app");
+        assert!(complete_bundle(&template), "Run cargo xtask template first");
+        let output = root.join("target/rake019-verification");
+        let mut config = RakeConfig::new("https://example.com");
+        config.name = Some("Rake Install Proof".into());
+        config.identifier = Some("org.example.rake-install-proof".into());
+        let icon = Icon::Path(template.join("Contents/Resources").join(ICON_FILE));
+        let app = assemble(&config, &template, &output, true, Some(&icon))
+            .unwrap()
+            .path;
+        let image = package_dmg(&app, &output, true).unwrap();
+        let mount = Staging::new(&output).unwrap();
+        run(Command::new("/usr/bin/hdiutil")
+            .args(["attach", "-nobrowse", "-readonly", "-mountpoint"])
+            .arg(&mount.0)
+            .arg(&image))
+        .unwrap();
+        let mounted = mount.0.join("Rake Install Proof.app");
+        let verification = verify_signature(&mounted);
+        let has_config = mounted.join("Contents/Resources/config.json").is_file();
+        let applications_link = fs::read_link(mount.0.join("Applications"));
+        run(Command::new("/usr/bin/hdiutil").arg("detach").arg(&mount.0)).unwrap();
+        verification.unwrap();
+        assert!(has_config);
+        assert_eq!(applications_link.unwrap(), Path::new("/Applications"));
+        println!(
+            "Mounted DMG read-only, verified app signature and Applications link, detached. Artifacts retained at {}",
+            output.display()
+        );
+    }
+
+    #[test]
+    #[ignore = "writes only /Applications/Rake Install Proof.app; run real_dmg_app first, then launch and remove manually"]
+    fn real_install_app() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let app = root.join("target/rake019-verification/Rake Install Proof.app");
+        let applications = env::var_os("RAKE_APPLICATIONS")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("/Applications"));
+        let destination = applications.join("Rake Install Proof.app");
+        assert!(
+            fs::symlink_metadata(&destination)
+                .is_err_and(|error| error.kind() == io::ErrorKind::NotFound),
+            "proof destination must not exist"
+        );
+        assert_eq!(install(&app, &applications).unwrap(), destination);
+        verify_signature(&destination).unwrap();
+        println!(
+            "Installed and verified {}. Launch, quit, and remove this proof app manually.",
+            destination.display()
+        );
+    }
 
     #[test]
     fn discovers_icons_in_priority_order_and_resolves_relative_urls() {
