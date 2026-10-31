@@ -126,22 +126,36 @@ fn install_icon(config: &RakeConfig, app: &Path) -> Result<Vec<String>, Error> {
         icon_candidates(&base, &fs::read_to_string(html).unwrap_or_default())
     };
     for candidate in candidates {
-        let source = if candidate.starts_with("http://") || candidate.starts_with("https://") {
-            if fetch_icon(&candidate, &downloaded).is_err() {
+        let source =
+            if Url::parse(&candidate).is_ok_and(|url| matches!(url.scheme(), "http" | "https")) {
+                if fetch_icon(&candidate, &downloaded).is_err() {
+                    continue;
+                }
+                downloaded.clone()
+            } else {
+                PathBuf::from(candidate)
+            };
+        let bytes = fs::read(&source).unwrap_or_default();
+        let bytes = if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+            bytes
+        } else {
+            let converted = work.0.join("converted.png");
+            if run(Command::new("gdk-pixbuf-thumbnailer")
+                .args(["--size", "256", "--"])
+                .arg(&source)
+                .arg(&converted))
+            .is_err()
+            {
                 continue;
             }
-            downloaded.clone()
-        } else {
-            PathBuf::from(candidate)
+            fs::read(converted)?
         };
-        if let Ok(bytes) = fs::read(source)
-            && bytes.starts_with(b"\x89PNG\r\n\x1a\n")
-        {
+        if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
             fs::write(app.join("icon.png"), bytes)?;
             return Ok(Vec::new());
         }
     }
-    Ok(vec!["No usable PNG icon found; keeping the template's default icon. Linux accepts PNG icons without conversion".into()])
+    Ok(vec!["No usable icon found; keeping the template's default icon. Non-PNG icons require gdk-pixbuf-thumbnailer".into()])
 }
 
 pub(crate) fn package(

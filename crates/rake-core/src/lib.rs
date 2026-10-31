@@ -506,6 +506,7 @@ fn run(command: &mut Command) -> Result<String, Error> {
         Some("cp") => "cp",
         Some("dpkg-deb") => "dpkg-deb",
         Some("chmod") => "chmod",
+        Some("gdk-pixbuf-thumbnailer") => "gdk-pixbuf-thumbnailer",
         Some("/usr/bin/ditto") => "ditto",
         Some("/usr/bin/plutil") => "plutil",
         Some("/usr/bin/codesign") => "codesign",
