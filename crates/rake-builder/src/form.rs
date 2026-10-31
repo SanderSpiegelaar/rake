@@ -44,8 +44,8 @@ impl Field {
             Self::MinHeight => "Minimum height",
             Self::Title => "Title",
             Self::UserAgent => "User agent",
-            Self::Inject => "Inject files (one per line)",
-            Self::SafeDomains => "Safe domains (one per line)",
+            Self::Inject => "Inject files",
+            Self::SafeDomains => "Safe domains",
         }
     }
 
@@ -118,13 +118,20 @@ impl ConfigDraft {
             (!value.is_empty()).then(|| value.to_owned())
         };
         let number = |field: Field| {
-            text(field).parse::<u32>().map_err(|_| {
-                format!(
-                    "{}: must be a nonnegative integer, got `{}`",
-                    field.key(),
-                    text(field)
-                )
-            })
+            let value = text(field);
+            // Mirrors clap's u32 range parser message for the matching CLI flag.
+            let reason = match value.parse::<i64>() {
+                Ok(number) => match u32::try_from(number) {
+                    Ok(number) => return Ok(number),
+                    Err(_) => format!("{number} is not in 0..={}", u32::MAX),
+                },
+                Err(error) => error.to_string(),
+            };
+            Err(format!(
+                "invalid value '{value}' for '--{} <{}>': {reason}",
+                field.key().replace('_', "-"),
+                field.key().to_uppercase()
+            ))
         };
         let optional_number = |field| {
             if text(field).is_empty() {
@@ -260,14 +267,21 @@ mod tests {
             Field::MinWidth,
             Field::MinHeight,
         ] {
-            for value in ["abc", "-1", "1.5", "4294967296"] {
+            for (value, reason) in [
+                ("abc", "invalid digit found in string"),
+                ("-1", "-1 is not in 0..=4294967295"),
+                ("1.5", "invalid digit found in string"),
+                ("4294967296", "4294967296 is not in 0..=4294967295"),
+            ] {
                 let mut draft = draft();
                 draft.text[field as usize] = value.into();
                 assert_eq!(
                     draft.config().unwrap_err(),
                     format!(
-                        "{}: must be a nonnegative integer, got `{value}`",
-                        field.key()
+                        "invalid value '{value}' for '--{} <{}>': {}",
+                        field.key().replace('_', "-"),
+                        field.key().to_uppercase(),
+                        reason
                     )
                 );
             }
