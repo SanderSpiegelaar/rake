@@ -215,6 +215,8 @@ mod tests {
 
     #[test]
     fn flags_file_and_mixed_inputs_produce_equal_configs() {
+        let style = std::env::temp_dir().join("style.css");
+        let script = std::env::temp_dir().join("script.js");
         let flags = Args::try_parse_from([
             "rake",
             "https://example.com",
@@ -240,9 +242,9 @@ mod tests {
             "--dark-mode",
             "--debug",
             "--inject",
-            "/tmp/style.css",
+            style.to_str().unwrap(),
             "--inject",
-            "/tmp/script.js",
+            script.to_str().unwrap(),
             "--safe-domain",
             "example.com",
             "--safe-domain",
@@ -277,9 +279,9 @@ mod tests {
                 "Example App",
                 "--dark-mode",
                 "--inject",
-                "/tmp/style.css",
+                style.to_str().unwrap(),
                 "--inject",
-                "/tmp/script.js",
+                script.to_str().unwrap(),
                 "--safe-domain",
                 "example.com",
                 "--safe-domain",
