@@ -76,15 +76,15 @@ jobs:
     steps:
       - windows_setup
       - run:
-          name: Inspect Windows browser environment
+          name: Install WebView2 Runtime
           command: |
-            whoami /user
-            query session
-            Get-Process -Id $PID | Select-Object ProcessName, SessionId
-            Get-ChildItem "${env:ProgramFiles(x86)}\Microsoft\EdgeWebView\Application" -ErrorAction SilentlyContinue
-            Get-ChildItem "$env:LOCALAPPDATA\Microsoft\EdgeWebView\Application" -ErrorAction SilentlyContinue
-            Get-ChildItem Env:WEBVIEW2* -ErrorAction SilentlyContinue
-            exit 0
+            $ErrorActionPreference = 'Stop'
+            $installer = "$env:TEMP\MicrosoftEdgeWebview2Setup.exe"
+            Invoke-WebRequest https://go.microsoft.com/fwlink/p/?LinkId=2124703 -OutFile $installer
+            if ((Get-AuthenticodeSignature $installer).Status -ne 'Valid') { throw 'Invalid WebView2 installer signature' }
+            $install = Start-Process $installer -ArgumentList '/silent', '/install' -Wait -PassThru
+            if ($install.ExitCode -ne 0) { exit $install.ExitCode }
+            Get-ChildItem "${env:ProgramFiles(x86)}\Microsoft\EdgeWebView\Application" | Out-Host
       - run:
           name: Check and smoke test Windows apps
           no_output_timeout: 20m
