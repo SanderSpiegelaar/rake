@@ -134,6 +134,7 @@ def main():
                 "--target",
                 "zip",
                 "--json",
+                "--debug",
             ]
             result = json.loads(
                 subprocess.check_output(args, cwd=output, env=environment)
@@ -167,6 +168,21 @@ def main():
             runtime_environment["WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"] = (
                 f'--enable-logging --log-file="{artifacts.resolve() / "webview2.log"}"'
             )
+            baseline_environment = runtime_environment.copy()
+            baseline_environment["RAKE_CONFIG"] = str(app / "config.json")
+            baseline = subprocess.Popen(
+                [str(template / "rake-runtime.exe")],
+                cwd=directory,
+                env=baseline_environment,
+            )
+            try:
+                print(f"Untouched template callback: {rendered.wait(15)}", flush=True)
+                print(f"Untouched template exit: {baseline.poll()}", flush=True)
+            finally:
+                if baseline.poll() is None:
+                    baseline.terminate()
+                baseline.wait(timeout=15)
+                rendered.clear()
             with (artifacts / "runtime.log").open("w") as log:
                 process = subprocess.Popen(
                     [str(executable)],
@@ -178,24 +194,6 @@ def main():
                 try:
                     for _ in range(600):
                         if process.poll() is not None:
-                            baseline_environment = runtime_environment.copy()
-                            baseline_environment["RAKE_CONFIG"] = str(
-                                app / "config.json"
-                            )
-                            baseline = subprocess.Popen(
-                                [str(template / "rake-runtime.exe")],
-                                cwd=directory,
-                                env=baseline_environment,
-                            )
-                            try:
-                                print(
-                                    f"Untouched template exited with {baseline.wait(timeout=15)}",
-                                    flush=True,
-                                )
-                            except subprocess.TimeoutExpired:
-                                print("Untouched template stayed alive", flush=True)
-                                baseline.terminate()
-                                baseline.wait(timeout=15)
                             subprocess.run(
                                 [
                                     "powershell.exe",
@@ -214,8 +212,26 @@ def main():
                         if rendered.wait(0.1):
                             break
                     else:
+                        subprocess.run(["tasklist", "/v"], check=False)
+                        subprocess.run(
+                            [
+                                "powershell.exe",
+                                "-NoProfile",
+                                "-Command",
+                                "Add-Type -AssemblyName System.Windows.Forms; "
+                                "Add-Type -AssemblyName System.Drawing; "
+                                "$bounds = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds; "
+                                "$image = New-Object System.Drawing.Bitmap $bounds.Width,$bounds.Height; "
+                                "$graphics = [System.Drawing.Graphics]::FromImage($image); "
+                                "$graphics.CopyFromScreen($bounds.Location,[System.Drawing.Point]::Empty,$bounds.Size); "
+                                f"$image.Save('{artifacts.resolve() / 'desktop.png'}'); "
+                                "$graphics.Dispose(); $image.Dispose()",
+                            ],
+                            check=False,
+                        )
                         raise RuntimeError(
-                            "WebView2 did not execute page JavaScript within 60 seconds"
+                            "WebView2 did not execute page JavaScript within 60 seconds: "
+                            + (artifacts / "runtime.log").read_text()
                         )
                     assert process.poll() is None
                     result = f"{platform.platform()}: ZIP app loaded config next to exe, custom icon resources match, WebView2 executed JavaScript."
