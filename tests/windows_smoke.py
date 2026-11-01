@@ -178,6 +178,24 @@ def main():
                 try:
                     for _ in range(600):
                         if process.poll() is not None:
+                            baseline_environment = runtime_environment.copy()
+                            baseline_environment["RAKE_CONFIG"] = str(
+                                app / "config.json"
+                            )
+                            baseline = subprocess.Popen(
+                                [str(template / "rake-runtime.exe")],
+                                cwd=directory,
+                                env=baseline_environment,
+                            )
+                            try:
+                                print(
+                                    f"Untouched template exited with {baseline.wait(timeout=15)}",
+                                    flush=True,
+                                )
+                            except subprocess.TimeoutExpired:
+                                print("Untouched template stayed alive", flush=True)
+                                baseline.terminate()
+                                baseline.wait(timeout=15)
                             subprocess.run(
                                 [
                                     "powershell.exe",

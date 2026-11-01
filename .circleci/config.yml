@@ -40,6 +40,11 @@ commands:
       - run:
           name: Install WebKitGTK and smoke test tools
           command: |
+            for source in /etc/apt/sources.list /etc/apt/sources.list.d/*.sources; do
+              if [ -f "$source" ]; then
+                sudo sed -i 's|http://us-east-1.ec2.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' "$source"
+              fi
+            done
             sudo apt-get update
             sudo apt-get install -y libwebkit2gtk-4.1-dev libxdo-dev libgdk-pixbuf2.0-bin pkg-config xvfb x11-apps imagemagick weston dbus-x11 fonts-dejavu xdg-utils
   setup:
