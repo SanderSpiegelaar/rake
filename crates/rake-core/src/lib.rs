@@ -19,12 +19,20 @@ mod macos;
 use macos as host;
 #[cfg(target_os = "macos")]
 pub use macos::{ICON_FILE, assemble, install, package_dmg, prepare_icon, sign};
-#[cfg(any(target_os = "linux", test))]
+#[cfg(any(target_os = "linux", all(test, unix)))]
 mod linux;
 #[cfg(target_os = "linux")]
 use linux as host;
 #[cfg(target_os = "linux")]
 pub use linux::assemble;
+#[cfg(windows)]
+mod windows;
+#[cfg(windows)]
+use windows as host;
+#[cfg(windows)]
+pub use windows::assemble;
+#[cfg(any(windows, test))]
+mod windows_icon;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum Target {
@@ -33,12 +41,14 @@ pub enum Target {
     Dmg,
     Tarball,
     Deb,
+    Zip,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Platform {
     Macos,
     Linux,
+    Windows,
 }
 
 impl Platform {
@@ -49,7 +59,7 @@ impl Platform {
     pub fn template_name(self) -> &'static str {
         match self {
             Self::Macos => "Rake.app",
-            Self::Linux => "Rake",
+            Self::Linux | Self::Windows => "Rake",
         }
     }
 
@@ -60,6 +70,9 @@ impl Platform {
                     && path.join("Contents/Info.plist").is_file()
             }
             Self::Linux => path.join("rake-runtime").is_file() && path.join("icon.png").is_file(),
+            Self::Windows => {
+                path.join("rake-runtime.exe").is_file() && path.join("icon.png").is_file()
+            }
         }
     }
 
@@ -69,6 +82,7 @@ impl Platform {
             (_, Target::App)
                 | (Self::Macos, Target::Dmg)
                 | (Self::Linux, Target::Tarball | Target::Deb)
+                | (Self::Windows, Target::Zip)
         ) {
             return Err(Error::InvalidInput(format!(
                 "{target:?} output is not supported on {self:?}"
@@ -78,6 +92,9 @@ impl Platform {
             return Err(Error::InvalidInput(
                 "--install is macOS-only; install the .deb with apt instead".into(),
             ));
+        }
+        if self == Self::Windows && install {
+            return Err(Error::InvalidInput("--install is macOS-only".into()));
         }
         Ok(())
     }
@@ -102,6 +119,7 @@ pub enum TemplateTarget {
     MacosUniversal,
     LinuxArm64,
     LinuxX86_64,
+    WindowsX86_64,
 }
 
 impl TemplateTarget {
@@ -116,6 +134,7 @@ impl TemplateTarget {
             ("macos", "universal") => Ok(Self::MacosUniversal),
             ("linux", "aarch64" | "arm64") => Ok(Self::LinuxArm64),
             ("linux", "x86_64") => Ok(Self::LinuxX86_64),
+            ("windows", "x86_64") => Ok(Self::WindowsX86_64),
             ("macos", "arm64") => Ok(Self::MacosArm64),
             _ => Err(Error::UnsupportedTarget(format!("{os}-{arch}"))),
         }
@@ -128,6 +147,7 @@ impl TemplateTarget {
             Self::MacosUniversal => "macos-universal",
             Self::LinuxArm64 => "linux-arm64",
             Self::LinuxX86_64 => "linux-x86_64",
+            Self::WindowsX86_64 => "windows-x86_64",
         }
     }
 
@@ -135,6 +155,7 @@ impl TemplateTarget {
         match self {
             Self::MacosArm64 | Self::MacosX86_64 | Self::MacosUniversal => Platform::Macos,
             Self::LinuxArm64 | Self::LinuxX86_64 => Platform::Linux,
+            Self::WindowsX86_64 => Platform::Windows,
         }
     }
 }
@@ -455,6 +476,12 @@ fn ensure_template_for(
 }
 
 fn checksum(path: &Path) -> Result<String, Error> {
+    #[cfg(windows)]
+    return run(windows::powershell(
+        "(Get-FileHash -LiteralPath $env:RAKE_HASH_PATH -Algorithm SHA256).Hash.ToLowerInvariant()",
+    )
+    .env("RAKE_HASH_PATH", path));
+    #[cfg(not(windows))]
     if env::consts::OS == "macos" {
         run(Command::new("shasum").args(["-a", "256"]).arg(path))
     } else {
@@ -463,6 +490,12 @@ fn checksum(path: &Path) -> Result<String, Error> {
 }
 
 fn cache_root() -> Result<PathBuf, Error> {
+    if env::consts::OS == "windows" {
+        return env::var_os("LOCALAPPDATA")
+            .filter(|value| !value.is_empty())
+            .map(|path| PathBuf::from(path).join("rake"))
+            .ok_or(Error::MissingCacheDirectory);
+    }
     if env::consts::OS == "linux"
         && let Some(root) = env::var_os("XDG_CACHE_HOME").filter(|value| !value.is_empty())
     {
@@ -503,6 +536,7 @@ fn run(command: &mut Command) -> Result<String, Error> {
         Some("curl") => "curl",
         Some("shasum") => "shasum",
         Some("sha256sum") => "sha256sum",
+        Some("powershell.exe") => "powershell.exe",
         Some("cp") => "cp",
         Some("dpkg-deb") => "dpkg-deb",
         Some("chmod") => "chmod",
@@ -680,6 +714,7 @@ mod tests {
             TemplateTarget::MacosUniversal,
             TemplateTarget::LinuxArm64,
             TemplateTarget::LinuxX86_64,
+            TemplateTarget::WindowsX86_64,
         ] {
             let bundle = release.join(target.platform().template_name());
             let (executable, metadata) = fixture_paths(target.platform());
@@ -715,6 +750,7 @@ mod tests {
         match platform {
             Platform::Macos => ("Contents/MacOS/rake-runtime", "Contents/Info.plist"),
             Platform::Linux => ("rake-runtime", "icon.png"),
+            Platform::Windows => ("rake-runtime.exe", "icon.png"),
         }
     }
 
@@ -727,6 +763,7 @@ mod tests {
             Some(TemplateTarget::MacosUniversal),
             Some(TemplateTarget::LinuxArm64),
             Some(TemplateTarget::LinuxX86_64),
+            Some(TemplateTarget::WindowsX86_64),
         ] {
             let (temp, _, _) = fixture();
             let server = Server::start(temp.0.clone());
@@ -851,7 +888,11 @@ mod tests {
             TemplateTarget::resolve("macos", "x86_64").unwrap().as_str(),
             "macos-x86_64"
         );
-        for (os, arch) in [("macos", "arm"), ("linux", "arm"), ("windows", "x86_64")] {
+        assert_eq!(
+            TemplateTarget::resolve("windows", "x86_64").unwrap(),
+            TemplateTarget::WindowsX86_64
+        );
+        for (os, arch) in [("macos", "arm"), ("linux", "arm"), ("windows", "aarch64")] {
             assert_eq!(
                 TemplateTarget::resolve(os, arch).unwrap_err().exit_code(),
                 4

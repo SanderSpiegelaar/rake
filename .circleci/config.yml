@@ -1,6 +1,11 @@
 version: 2.1
 
 executors:
+  windows:
+    machine:
+      image: windows-server-2022-gui:current
+      shell: powershell.exe -ExecutionPolicy Bypass
+    resource_class: windows.medium
   linux:
     machine:
       image: ubuntu-2404:current
@@ -15,11 +20,31 @@ executors:
       CARGO_TERM_COLOR: always
 
 commands:
+  windows_setup:
+    steps:
+      - checkout
+      - run:
+          name: Install Rust
+          command: |
+            $ErrorActionPreference = 'Stop'
+            $env:Path = "$env:USERPROFILE\.cargo\bin;$env:Path"
+            if (!(Get-Command rustup -ErrorAction SilentlyContinue)) {
+              Invoke-WebRequest https://win.rustup.rs/x86_64 -OutFile rustup-init.exe
+              & .\rustup-init.exe -y --default-toolchain none
+              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            }
+            rustup show
+            exit $LASTEXITCODE
   linux_dependencies:
     steps:
       - run:
           name: Install WebKitGTK and smoke test tools
           command: |
+            for source in /etc/apt/sources.list /etc/apt/sources.list.d/*.sources; do
+              if [ -f "$source" ]; then
+                sudo sed -i 's|http://us-east-1.ec2.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' "$source"
+              fi
+            done
             sudo apt-get update
             sudo apt-get install -y libwebkit2gtk-4.1-dev libxdo-dev libgdk-pixbuf2.0-bin pkg-config xvfb x11-apps imagemagick weston dbus-x11 fonts-dejavu xdg-utils
   setup:
@@ -51,6 +76,37 @@ commands:
             - target
 
 jobs:
+  check-windows:
+    executor: windows
+    steps:
+      - windows_setup
+      - run:
+          name: Install WebView2 Runtime
+          command: |
+            $ErrorActionPreference = 'Stop'
+            $installer = "$env:TEMP\MicrosoftEdgeWebview2Setup.exe"
+            Invoke-WebRequest https://go.microsoft.com/fwlink/p/?LinkId=2124703 -OutFile $installer
+            if ((Get-AuthenticodeSignature $installer).Status -ne 'Valid') { throw 'Invalid WebView2 installer signature' }
+            $install = Start-Process $installer -ArgumentList '/silent', '/install' -Wait -PassThru
+            if ($install.ExitCode -ne 0) { exit $install.ExitCode }
+            Get-ChildItem "${env:ProgramFiles(x86)}\Microsoft\EdgeWebView\Application" | Out-Host
+      - run:
+          name: Check and smoke test Windows apps
+          no_output_timeout: 20m
+          command: |
+            $ErrorActionPreference = 'Stop'
+            $env:Path = "$env:USERPROFILE\.cargo\bin;$env:Path"
+            cargo fmt --all --check
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            cargo clippy --workspace --all-targets -- -D warnings
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            cargo test --workspace --locked
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            python tests/windows_smoke.py
+            exit $LASTEXITCODE
+      - store_artifacts:
+          path: target/windows-smoke
+
   check-linux:
     executor: linux
     steps:
@@ -155,6 +211,29 @@ jobs:
             - rake-linux-<< parameters.arch >>
             - rake-template-*-linux-<< parameters.arch >>.tar.gz
 
+  release-windows:
+    executor: windows
+    steps:
+      - windows_setup
+      - run:
+          name: Build and stage Windows assets
+          no_output_timeout: 20m
+          command: |
+            $ErrorActionPreference = 'Stop'
+            $env:Path = "$env:USERPROFILE\.cargo\bin;$env:Path"
+            cargo xtask template x86_64
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            cargo build --release --locked --package rake-cli
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            New-Item -ItemType Directory -Force release-assets
+            Copy-Item target/release/rake.exe release-assets/rake-windows-x86_64.exe
+            Copy-Item "target/template/rake-template-$($env:CIRCLE_TAG.Substring(1))-windows-x86_64.tar.gz" release-assets/
+      - persist_to_workspace:
+          root: release-assets
+          paths:
+            - rake-windows-x86_64.exe
+            - rake-template-*-windows-x86_64.tar.gz
+
   publish:
     executor: macos
     steps:
@@ -164,7 +243,7 @@ jobs:
           name: Combine release checksums
           working_directory: release-assets
           command: |
-            shasum -a 256 rake rake-linux-* rake-template-*.tar.gz > SHA256SUMS
+            shasum -a 256 rake rake-linux-* rake-windows-*.exe rake-template-*.tar.gz > SHA256SUMS
             shasum -a 256 --check SHA256SUMS
       # GH_TOKEN comes from the github-release context and needs contents: write on the repo.
       - run:
@@ -180,6 +259,7 @@ workflows:
     jobs:
       - check
       - check-linux
+      - check-windows
       - smoke
 
   release:
@@ -208,12 +288,19 @@ workflows:
               only: /^v.*/
             branches:
               ignore: /.*/
+      - release-windows:
+          filters:
+            tags:
+              only: /^v.*/
+            branches:
+              ignore: /.*/
       - publish:
           context: github-release
           requires:
             - release-macos
             - release-linux-x86_64
             - release-linux-arm64
+            - release-windows
           filters:
             tags:
               only: /^v.*/

@@ -4424,6 +4424,7 @@ dependencies = [
  "rake-config",
  "serde_json",
  "url",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4437,6 +4438,7 @@ dependencies = [
  "serde_json",
  "tao",
  "url",
+ "windows-sys 0.61.2",
  "wry",
 ]
 

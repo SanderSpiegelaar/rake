@@ -1,3 +1,4 @@
+#[cfg(not(windows))]
 use std::process::Command;
 
 use rake_config::RakeConfig;
@@ -38,18 +39,46 @@ impl NavigationPolicy {
             return true;
         }
         if Url::parse(url).is_ok_and(|url| matches!(url.scheme(), "http" | "https")) {
-            let opener = if cfg!(target_os = "linux") {
-                "xdg-open"
-            } else {
-                "open"
-            };
-            match Command::new(opener).arg(url).status() {
-                Ok(status) if status.success() => {}
-                Ok(status) => eprintln!("Cannot open {url} in the default browser: {status}"),
-                Err(error) => eprintln!("Cannot open {url} in the default browser: {error}"),
+            #[cfg(windows)]
+            open_external(url);
+            #[cfg(not(windows))]
+            {
+                let opener = if cfg!(target_os = "linux") {
+                    "xdg-open"
+                } else {
+                    "open"
+                };
+                match Command::new(opener).arg(url).status() {
+                    Ok(status) if status.success() => {}
+                    Ok(status) => eprintln!("Cannot open {url} in the default browser: {status}"),
+                    Err(error) => eprintln!("Cannot open {url} in the default browser: {error}"),
+                }
             }
         }
         false
+    }
+}
+
+#[cfg(windows)]
+fn open_external(url: &str) {
+    use windows_sys::Win32::UI::{Shell::ShellExecuteW, WindowsAndMessaging::SW_SHOWNORMAL};
+    let url: Vec<u16> = url.encode_utf16().chain(Some(0)).collect();
+    // SAFETY: Both strings are NUL-terminated and live until ShellExecuteW returns.
+    let result = unsafe {
+        ShellExecuteW(
+            std::ptr::null_mut(),
+            windows_sys::core::w!("open"),
+            url.as_ptr(),
+            std::ptr::null(),
+            std::ptr::null(),
+            SW_SHOWNORMAL,
+        )
+    };
+    if result as usize <= 32 {
+        eprintln!(
+            "Cannot open URL in the default browser: ShellExecuteW returned {}",
+            result as usize
+        );
     }
 }
 

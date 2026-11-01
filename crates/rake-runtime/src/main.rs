@@ -1,3 +1,5 @@
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
 use std::{env, ffi::OsString, fs, path::Path, rc::Rc};
 
 use rake_config::RakeConfig;
@@ -46,6 +48,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .with_titlebar_transparent(true)
             .with_title_hidden(true)
             .with_fullsize_content_view(true);
+    }
+    #[cfg(windows)]
+    {
+        use tao::{
+            platform::windows::{IconExtWindows, WindowBuilderExtWindows},
+            window::Icon,
+        };
+        if let Ok(icon) = Icon::from_resource(1, None) {
+            window = window
+                .with_window_icon(Some(icon.clone()))
+                .with_taskbar_icon(Some(icon));
+        }
     }
     let window = Rc::new(window.build(&event_loop)?);
     let mut webview = WebViewBuilder::new()

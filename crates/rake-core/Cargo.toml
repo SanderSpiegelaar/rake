@@ -9,3 +9,6 @@ publish.workspace = true
 rake-config = { path = "../rake-config" }
 serde_json.workspace = true
 url.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "=0.61.2", features = ["Win32_System_LibraryLoader", "Win32_UI_WindowsAndMessaging"] }
