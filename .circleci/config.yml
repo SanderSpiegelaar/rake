@@ -76,6 +76,16 @@ jobs:
     steps:
       - windows_setup
       - run:
+          name: Inspect Windows browser environment
+          command: |
+            whoami /user
+            query session
+            Get-Process -Id $PID | Select-Object ProcessName, SessionId
+            Get-ChildItem "${env:ProgramFiles(x86)}\Microsoft\EdgeWebView\Application" -ErrorAction SilentlyContinue
+            Get-ChildItem "$env:LOCALAPPDATA\Microsoft\EdgeWebView\Application" -ErrorAction SilentlyContinue
+            Get-ChildItem Env:WEBVIEW2* -ErrorAction SilentlyContinue
+            exit 0
+      - run:
           name: Check and smoke test Windows apps
           no_output_timeout: 20m
           command: |

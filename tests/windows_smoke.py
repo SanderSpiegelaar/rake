@@ -178,6 +178,17 @@ def main():
                 try:
                     for _ in range(600):
                         if process.poll() is not None:
+                            subprocess.run(
+                                [
+                                    "powershell.exe",
+                                    "-NoProfile",
+                                    "-Command",
+                                    "Get-WinEvent -FilterHashtable @{LogName='Application'; "
+                                    "StartTime=(Get-Date).AddMinutes(-5); Level=2} "
+                                    "-ErrorAction SilentlyContinue | Format-List TimeCreated,Message",
+                                ],
+                                check=False,
+                            )
                             raise RuntimeError(
                                 f"Runtime exited with {process.returncode}: "
                                 + (artifacts / "runtime.log").read_text()
