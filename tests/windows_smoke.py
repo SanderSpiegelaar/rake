@@ -163,11 +163,15 @@ def main():
                 "release exe must use GUI subsystem"
             )
             shutil.copy2(archive, artifacts)
+            runtime_environment = os.environ.copy()
+            runtime_environment["WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"] = (
+                f'--enable-logging --log-file="{artifacts.resolve() / "webview2.log"}"'
+            )
             with (artifacts / "runtime.log").open("w") as log:
                 process = subprocess.Popen(
                     [str(executable)],
                     cwd=directory,
-                    env=environment,
+                    env=runtime_environment,
                     stdout=log,
                     stderr=log,
                 )
@@ -175,7 +179,8 @@ def main():
                     for _ in range(600):
                         if process.poll() is not None:
                             raise RuntimeError(
-                                f"Runtime exited with {process.returncode}"
+                                f"Runtime exited with {process.returncode}: "
+                                + (artifacts / "runtime.log").read_text()
                             )
                         if rendered.wait(0.1):
                             break
